@@ -1,0 +1,15 @@
+# Telegram Bot
+python-telegram-bot[job-queue]==22.5
+
+# Database
+sqlalchemy>=2.0.0
+aiosqlite>=0.20.0
+
+# Google Drive
+google-api-python-client>=2.150.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# Utils
+python-dotenv>=1.0.0
+loguru>=0.7.0
