@@ -152,6 +152,9 @@ def _create_mime_message(
     
     # Вложения
     if attachments:
+        from email.header import Header
+        from urllib.parse import quote
+        
         for item in attachments:
             # Поддержка двух форматов: Path или (name, Path)
             if isinstance(item, tuple):
@@ -165,9 +168,14 @@ def _create_mime_message(
                     part = MIMEBase("application", "octet-stream")
                     part.set_payload(f.read())
                 encoders.encode_base64(part)
+                
+                # Кодируем имя файла по RFC 2231 для поддержки кириллицы
+                # filename* использует URL-encoding для UTF-8
+                encoded_filename = quote(display_name, safe='')
                 part.add_header(
                     "Content-Disposition",
-                    f"attachment; filename=\"{display_name}\"",
+                    "attachment",
+                    filename=("utf-8", "", display_name),  # RFC 2231 формат
                 )
                 message.attach(part)
     

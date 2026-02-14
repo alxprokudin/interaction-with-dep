@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional, TYPE_CHECKING
 
 from loguru import logger
@@ -24,6 +25,61 @@ EMAIL_TYPE_DESCRIPTIONS = {
     "roaming": "Роуминг",
     "documents": "Документы поставщику",
 }
+
+
+def extract_reply_text(full_text: str) -> str:
+    """
+    Извлечь только текст ответа, убрав цитирование исходного письма.
+    
+    Паттерны цитирования:
+    - Строки, начинающиеся с ">"
+    - Разделители типа "--- Original Message ---", "On ... wrote:"
+    - Дата + время + email в угловых скобках (начало цитаты)
+    """
+    if not full_text:
+        return "(текст отсутствует)"
+    
+    lines = full_text.split('\n')
+    reply_lines = []
+    in_quote = False
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # Пропускаем пустые строки в начале
+        if not reply_lines and not stripped:
+            continue
+        
+        # Маркеры начала цитирования
+        quote_markers = [
+            r'^>',  # Цитата с >
+            r'^On .+ wrote:',  # "On Mon, Jan 1 wrote:"
+            r'^\d{1,2}[\./]\d{1,2}[\./]\d{2,4}.*<.*@.*>',  # Дата + email
+            r'^---+\s*(Original|Исходное)',  # --- Original Message ---
+            r'^_{3,}',  # _____ разделитель
+            r'^From:.*@',  # From: email
+            r'^Отправлено:',  # Outlook
+            r'^Sent:',  # Outlook EN
+        ]
+        
+        # Проверяем, начинается ли цитирование
+        for pattern in quote_markers:
+            if re.match(pattern, stripped, re.IGNORECASE):
+                in_quote = True
+                break
+        
+        if in_quote:
+            # Дальше идёт цитата — пропускаем
+            continue
+        
+        reply_lines.append(line)
+    
+    # Убираем пустые строки в конце
+    while reply_lines and not reply_lines[-1].strip():
+        reply_lines.pop()
+    
+    result = '\n'.join(reply_lines).strip()
+    return result if result else "(текст отсутствует)"
 
 
 async def process_email_replies(bot: Bot) -> int:
@@ -135,10 +191,12 @@ async def notify_user_about_reply(
             f"📝 *Тема:* {reply.subject}\n\n"
         )
         
-        # Добавляем текст ответа (ограничиваем длину)
-        body_text = reply.body_text or "(текст отсутствует)"
-        if len(body_text) > 2000:
-            body_text = body_text[:2000] + "...\n\n_(текст обрезан)_"
+        # Извлекаем только текст ответа (без цитирования)
+        body_text = extract_reply_text(reply.body_text)
+        
+        # Ограничиваем длину
+        if len(body_text) > 1500:
+            body_text = body_text[:1500] + "...\n\n_(текст обрезан)_"
         
         message_text += f"*Текст ответа:*\n{body_text}"
         
