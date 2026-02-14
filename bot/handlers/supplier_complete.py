@@ -47,14 +47,11 @@ def _extract_folder_id_from_link(link: str) -> Optional[str]:
     return None
 
 
-def _get_documents_keyboard(files_count: int) -> InlineKeyboardMarkup:
+def _get_documents_keyboard(has_files: bool = False) -> InlineKeyboardMarkup:
     """Клавиатура для состояния загрузки документов."""
     buttons = []
-    if files_count > 0:
-        buttons.append([InlineKeyboardButton(
-            f"✅ Завершить ({files_count} файл(ов))", 
-            callback_data="sc_finish"
-        )])
+    if has_files:
+        buttons.append([InlineKeyboardButton("✅ Завершить", callback_data="sc_finish")])
     buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="sc_cancel")])
     return InlineKeyboardMarkup(buttons)
 
@@ -125,9 +122,8 @@ async def start_supplier_complete(update: Update, context: ContextTypes.DEFAULT_
     context.user_data["incomplete_suppliers"] = {s["row_number"]: s for s in incomplete_suppliers}
     
     await update.message.reply_text(
-        f"📋 *Незавершённые заявки ({len(incomplete_suppliers)})*\n\n"
+        f"📋 Незавершённые заявки ({len(incomplete_suppliers)})\n\n"
         "Выберите поставщика для завершения заявки:",
-        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     
@@ -186,13 +182,12 @@ async def supplier_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["complete_files"] = []
     
     await query.edit_message_text(
-        f"✅ Выбран поставщик: *{supplier.get('name', '')}*\n"
+        f"✅ Выбран поставщик: {supplier.get('name', '')}\n"
         f"ИНН: {supplier.get('inn', '')}\n\n"
-        "📎 Загрузите *договор и протокол* (PDF, Word).\n"
+        "📎 Загрузите договор и протокол (PDF, Word).\n"
         "Можно отправить несколько файлов.\n\n"
-        "После загрузки нажмите *Завершить*.",
-        parse_mode="Markdown",
-        reply_markup=_get_documents_keyboard(0),
+        "После загрузки нажмите Завершить.",
+        reply_markup=_get_documents_keyboard(False),
     )
     
     return SC_DOCUMENTS
@@ -207,7 +202,7 @@ async def document_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         files = context.user_data.get("complete_files", [])
         await update.message.reply_text(
             "❌ Пожалуйста, отправьте файл (PDF или Word).",
-            reply_markup=_get_documents_keyboard(len(files)),
+            reply_markup=_get_documents_keyboard(len(files) > 0),
         )
         return SC_DOCUMENTS
     
@@ -222,7 +217,7 @@ async def document_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(
             f"❌ Неподдерживаемый формат: {file_ext}\n"
             "Допустимые форматы: PDF, DOC, DOCX",
-            reply_markup=_get_documents_keyboard(len(files)),
+            reply_markup=_get_documents_keyboard(len(files) > 0),
         )
         return SC_DOCUMENTS
     
@@ -238,15 +233,10 @@ async def document_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     files.append({"name": filename, "path": tmp_path})
     context.user_data["complete_files"] = files
     
-    # Формируем список загруженных файлов
-    files_list = "\n".join([f"• {f['name']}" for f in files])
-    
     await update.message.reply_text(
-        f"✅ Файл *{filename}* добавлен!\n\n"
-        f"*Загружено файлов:* {len(files)}\n{files_list}\n\n"
-        "Добавьте ещё файлы или нажмите *Завершить*.",
-        parse_mode="Markdown",
-        reply_markup=_get_documents_keyboard(len(files)),
+        f"✅ Файл добавлен: {filename}\n\n"
+        "Добавьте ещё файлы или нажмите Завершить.",
+        reply_markup=_get_documents_keyboard(True),
     )
     
     return SC_DOCUMENTS
@@ -294,9 +284,9 @@ async def _finalize_completion(
     # Функция отправки сообщения
     async def send_message(text: str):
         if from_callback:
-            await update.callback_query.message.reply_text(text, parse_mode="Markdown")
+            await update.callback_query.message.reply_text(text)
         else:
-            await update.message.reply_text(text, parse_mode="Markdown")
+            await update.message.reply_text(text)
     
     try:
         uploaded_links = []
@@ -347,15 +337,18 @@ async def _finalize_completion(
         # 4. Отчёт пользователю
         files_report = "\n".join([f"📁 {f['name']}: ✅" for f in files])
         report = (
-            f"📋 *Заявка завершена!*\n\n"
-            f"*Поставщик:* {supplier_name}\n"
-            f"*ИНН:* {supplier_inn}\n\n"
-            f"*Загруженные файлы:*\n{files_report}\n\n"
+            f"📋 Заявка завершена!\n\n"
+            f"Поставщик: {supplier_name}\n"
+            f"ИНН: {supplier_inn}\n\n"
+            f"Загруженные файлы:\n{files_report}\n\n"
             f"📧 Email бухгалтеру: {email_status}\n"
             f"📊 Таблица обновлена: {sheet_status}"
         )
         
-        await send_message(report)
+        if from_callback:
+            await update.callback_query.message.reply_text(report)
+        else:
+            await update.message.reply_text(report)
         
     except Exception as e:
         logger.error(f"Ошибка завершения заявки: {e}", exc_info=True)
