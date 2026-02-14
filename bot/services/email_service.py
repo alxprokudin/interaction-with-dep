@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import smtplib
 import asyncio
+import uuid
 import zipfile
 import tempfile
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from pathlib import Path
 from typing import Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from loguru import logger
 
@@ -74,10 +76,45 @@ class EmailMessage:
     subject: str
     body: str
     attachments: list = None
+    message_id: str = field(default_factory=lambda: "")
     
     def __post_init__(self):
         if self.attachments is None:
             self.attachments = []
+
+
+def generate_message_id(email_type: str, supplier_inn: str) -> str:
+    """
+    Генерирует уникальный Message-ID для письма.
+    
+    Формат: <uuid>.<email_type>.<inn>@mnogolososya.ru
+    Это позволит идентифицировать ответы по In-Reply-To header.
+    """
+    unique_id = uuid.uuid4().hex[:12]
+    message_id = f"<{unique_id}.{email_type}.{supplier_inn}@mnogolososya.ru>"
+    logger.debug(f"generate_message_id: {message_id}")
+    return message_id
+
+
+def parse_message_id(message_id: str) -> Optional[tuple[str, str]]:
+    """
+    Извлечь email_type и supplier_inn из Message-ID.
+    
+    Returns:
+        (email_type, supplier_inn) или None если формат не распознан.
+    """
+    try:
+        # Убираем < и >
+        clean_id = message_id.strip("<>")
+        # Формат: uuid.email_type.inn@domain
+        parts = clean_id.split("@")[0].split(".")
+        if len(parts) >= 3:
+            email_type = parts[1]
+            supplier_inn = parts[2]
+            return (email_type, supplier_inn)
+    except Exception as e:
+        logger.warning(f"Не удалось распарсить Message-ID {message_id}: {e}")
+    return None
 
 
 def _check_smtp_config() -> bool:
@@ -95,6 +132,7 @@ def _create_mime_message(
     subject: str,
     body: str,
     attachments: List[Path] = None,
+    message_id: str = None,
 ) -> MIMEMultipart:
     """Создать MIME сообщение для SMTP."""
     
@@ -104,6 +142,10 @@ def _create_mime_message(
     if cc:
         message["Cc"] = ", ".join(cc)
     message["Subject"] = subject
+    
+    # Добавляем Message-ID для отслеживания ответов
+    if message_id:
+        message["Message-ID"] = message_id
     
     # Тело письма
     message.attach(MIMEText(body, "plain", "utf-8"))
@@ -205,6 +247,7 @@ async def send_email(email: EmailMessage, sender: str = None) -> bool:
         subject=email.subject,
         body=email.body,
         attachments=email.attachments,
+        message_id=email.message_id,
     )
     
     # Собираем всех получателей (to + cc)
@@ -239,6 +282,111 @@ def _log_email(email: EmailMessage) -> None:
         f"---\n{email.body}\n"
         f"=== END EMAIL ==="
     )
+
+
+async def save_sent_email(
+    message_id: str,
+    supplier_inn: str,
+    supplier_name: str,
+    email_type: str,
+    recipient: str,
+    cc_recipients: List[str],
+    subject: str,
+    telegram_user_id: int,
+    company_id: Optional[int] = None,
+    sheet_id: Optional[str] = None,
+) -> bool:
+    """
+    Сохранить информацию об отправленном письме в БД для отслеживания ответов.
+    
+    Returns:
+        True если сохранено успешно.
+    """
+    from bot.models.base import async_session_factory
+    from bot.models.sent_email import SentEmail, EmailType
+    
+    logger.debug(f"save_sent_email: message_id={message_id}, type={email_type}")
+    
+    try:
+        # Преобразуем строку в EmailType
+        email_type_enum = EmailType(email_type)
+        
+        async with async_session_factory() as session:
+            sent_email = SentEmail(
+                message_id=message_id,
+                supplier_inn=supplier_inn,
+                supplier_name=supplier_name,
+                email_type=email_type_enum,
+                recipient=recipient,
+                cc_recipients=", ".join(cc_recipients) if cc_recipients else None,
+                subject=subject,
+                telegram_user_id=telegram_user_id,
+                company_id=company_id,
+                sheet_id=sheet_id,
+            )
+            session.add(sent_email)
+            await session.commit()
+            logger.info(f"Сохранено отправленное письмо: {email_type} для ИНН {supplier_inn}")
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения письма в БД: {e}", exc_info=True)
+        return False
+
+
+async def get_sent_email_by_message_id(message_id: str):
+    """
+    Найти отправленное письмо по Message-ID.
+    
+    Returns:
+        SentEmail или None.
+    """
+    from sqlalchemy import select
+    from bot.models.base import async_session_factory
+    from bot.models.sent_email import SentEmail
+    
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(SentEmail).where(SentEmail.message_id == message_id)
+            )
+            return result.scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Ошибка поиска письма по Message-ID: {e}")
+        return None
+
+
+async def mark_reply_received(message_id: str, reply_message_id: str = None) -> bool:
+    """
+    Отметить, что на письмо получен ответ.
+    
+    Returns:
+        True если успешно обновлено.
+    """
+    from bot.models.base import async_session_factory
+    from bot.models.sent_email import SentEmail
+    from sqlalchemy import select
+    
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(SentEmail).where(SentEmail.message_id == message_id)
+            )
+            sent_email = result.scalar_one_or_none()
+            
+            if sent_email:
+                sent_email.reply_received = True
+                sent_email.reply_received_at = datetime.now(timezone.utc)
+                if reply_message_id:
+                    sent_email.reply_message_id = reply_message_id
+                await session.commit()
+                logger.info(f"Отмечен ответ на письмо: {message_id}")
+                return True
+            else:
+                logger.warning(f"Письмо не найдено: {message_id}")
+                return False
+    except Exception as e:
+        logger.error(f"Ошибка отметки ответа: {e}", exc_info=True)
+        return False
 
 
 # ============ ШАБЛОНЫ ПИСЕМ ДЛЯ ЗАВЕДЕНИЯ ПОСТАВЩИКА ============
@@ -413,30 +561,66 @@ def _create_documents_archive(files_list: List[tuple], archive_name: str = "До
 async def send_supplier_registration_emails(
     supplier: SupplierData,
     card_path: Optional[Path] = None,
+    telegram_user_id: int = 0,
+    company_id: Optional[int] = None,
+    sheet_id: Optional[str] = None,
 ) -> dict:
     """
     Отправить все 4 письма для регистрации поставщика.
     
+    Args:
+        supplier: Данные поставщика
+        card_path: Путь к карточке поставщика
+        telegram_user_id: ID пользователя Telegram (для уведомлений об ответах)
+        company_id: ID компании
+        sheet_id: ID таблицы Google Sheets
+    
     Returns:
         Словарь с результатами: {"email_1": True/False, ...}
     """
-    logger.info(f"send_supplier_registration_emails: supplier={supplier.name}")
+    logger.info(f"send_supplier_registration_emails: supplier={supplier.name}, user_id={telegram_user_id}")
     
     results = {}
     downloaded_files: list[Path] = []
     
+    async def send_and_save(email: EmailMessage, email_type: str) -> bool:
+        """Отправить письмо и сохранить в БД."""
+        # Генерируем Message-ID
+        message_id = generate_message_id(email_type, supplier.inn)
+        email.message_id = message_id
+        
+        # Отправляем
+        success = await send_email(email)
+        
+        # Сохраняем в БД (даже если не отправлено — для отладки)
+        if telegram_user_id:
+            await save_sent_email(
+                message_id=message_id,
+                supplier_inn=supplier.inn,
+                supplier_name=supplier.name,
+                email_type=email_type,
+                recipient=email.to[0] if email.to else "",
+                cc_recipients=email.cc,
+                subject=email.subject,
+                telegram_user_id=telegram_user_id,
+                company_id=company_id,
+                sheet_id=sheet_id,
+            )
+        
+        return success
+    
     try:
         # Письмо 1: Проверка СБ
         email_1 = create_email_1_sb_check(supplier, card_path)
-        results["email_1_sb"] = await send_email(email_1)
+        results["email_1_sb"] = await send_and_save(email_1, "sb_check")
         
         # Письмо 2: DocsInBox
         email_2 = create_email_2_docsinbox(supplier)
-        results["email_2_docsinbox"] = await send_email(email_2)
+        results["email_2_docsinbox"] = await send_and_save(email_2, "docsinbox")
         
         # Письмо 3: Роуминг
         email_3 = create_email_3_roaming(supplier)
-        results["email_3_roaming"] = await send_email(email_3)
+        results["email_3_roaming"] = await send_and_save(email_3, "roaming")
         
         # Письмо 4: Документы для поставщика
         if supplier.contact_email:
@@ -474,7 +658,7 @@ async def send_supplier_registration_emails(
                     total_size = sum(f[1].stat().st_size for f in downloaded_files) / 1024 / 1024
                     logger.info(f"Всего скачано {len(downloaded_files)} файлов, общий размер: {total_size:.2f} MB")
                     email_4 = create_email_4_documents(supplier, downloaded_files)
-                    results["email_4_documents"] = await send_email(email_4)
+                    results["email_4_documents"] = await send_and_save(email_4, "documents")
                 else:
                     logger.error("Не удалось скачать ни одного документа")
                     results["email_4_documents"] = False

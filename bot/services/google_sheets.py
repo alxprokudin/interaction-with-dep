@@ -298,8 +298,27 @@ class GoogleSheetsService:
         
         Args:
             sheet_id: ID таблицы
-            supplier_data: Данные поставщика (inn, kpp, name, email, phone, contact_name, subject, locations, responsible)
+            supplier_data: Данные поставщика
             worksheet_name: Название листа
+            
+        Колонки таблицы:
+            A: Дата добавления
+            B: ИНН
+            C: КПП
+            D: Название
+            E: Email
+            F: Телефон
+            G: Контактное лицо
+            H: Предмет
+            I: Точки поставки
+            J: Ответственный
+            K: Ссылка на папку
+            L: Ссылка на карточку
+            M: Ответ СБ
+            N: Ответ DocsInBox
+            O: Ответ Роуминг
+            P: Ответ Документы
+            Q: Telegram ID
             
         Returns:
             Успешность операции
@@ -310,19 +329,93 @@ class GoogleSheetsService:
         
         # Формируем строку в порядке колонок таблицы
         row = [
-            datetime.now().strftime("%d.%m.%Y %H:%M:%S"),  # Дата добавления
-            supplier_data.get("inn", ""),
-            supplier_data.get("kpp", ""),
-            supplier_data.get("name", ""),
-            supplier_data.get("email", ""),
-            supplier_data.get("phone", ""),
-            supplier_data.get("contact_name", ""),
-            supplier_data.get("subject", ""),
-            supplier_data.get("locations", ""),
-            supplier_data.get("responsible", ""),
+            datetime.now().strftime("%d.%m.%Y %H:%M:%S"),  # A: Дата добавления
+            supplier_data.get("inn", ""),                  # B: ИНН
+            supplier_data.get("kpp", ""),                  # C: КПП
+            supplier_data.get("name", ""),                 # D: Название
+            supplier_data.get("email", ""),                # E: Email
+            supplier_data.get("phone", ""),                # F: Телефон
+            supplier_data.get("contact_name", ""),         # G: Контактное лицо
+            supplier_data.get("subject", ""),              # H: Предмет
+            supplier_data.get("locations", ""),            # I: Точки поставки
+            supplier_data.get("responsible", ""),          # J: Ответственный
+            supplier_data.get("folder_link", ""),          # K: Ссылка на папку
+            supplier_data.get("card_link", ""),            # L: Ссылка на карточку
+            "",                                            # M: Ответ СБ (пусто)
+            "",                                            # N: Ответ DocsInBox (пусто)
+            "",                                            # O: Ответ Роуминг (пусто)
+            "",                                            # P: Ответ Документы (пусто)
+            str(supplier_data.get("telegram_user_id", "")),# Q: Telegram ID
         ]
         
         return await self.append_row(sheet_id, worksheet_name, row)
+    
+    async def update_supplier_reply_status(
+        self,
+        sheet_id: str,
+        supplier_inn: str,
+        email_type: str,
+        worksheet_name: str = "Реестр_Поставщики",
+    ) -> bool:
+        """
+        Обновить статус ответа на письмо для поставщика.
+        
+        Args:
+            sheet_id: ID таблицы
+            supplier_inn: ИНН поставщика для поиска строки
+            email_type: Тип письма ("sb_check", "docsinbox", "roaming", "documents")
+            worksheet_name: Название листа
+            
+        Returns:
+            Успешность операции
+        """
+        import asyncio
+        from datetime import datetime
+        
+        logger.info(f"update_supplier_reply_status: inn={supplier_inn}, type={email_type}")
+        
+        # Колонки для разных типов писем
+        column_map = {
+            "sb_check": "M",     # Ответ СБ
+            "docsinbox": "N",   # Ответ DocsInBox
+            "roaming": "O",     # Ответ Роуминг
+            "documents": "P",   # Ответ Документы
+        }
+        
+        column = column_map.get(email_type)
+        if not column:
+            logger.error(f"Неизвестный тип письма: {email_type}")
+            return False
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return False
+        
+        try:
+            def _update():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                # Ищем строку по ИНН (колонка B)
+                cell = worksheet.find(supplier_inn, in_column=2)
+                if not cell:
+                    logger.warning(f"Поставщик с ИНН {supplier_inn} не найден")
+                    return False
+                
+                # Обновляем ячейку с датой ответа
+                cell_address = f"{column}{cell.row}"
+                worksheet.update_acell(
+                    cell_address, 
+                    datetime.now().strftime("%d.%m.%Y %H:%M")
+                )
+                logger.info(f"Обновлена ячейка {cell_address} для ИНН {supplier_inn}")
+                return True
+            
+            return await asyncio.to_thread(_update)
+        except Exception as e:
+            logger.error(f"Ошибка обновления статуса: {e}", exc_info=True)
+            return False
 
 
 # Singleton instance

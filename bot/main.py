@@ -3,7 +3,7 @@ import sys
 
 from loguru import logger
 
-from bot.config import BOT_TOKEN
+from bot.config import BOT_TOKEN, get_env
 from bot.handlers.admin import get_admin_handlers
 from bot.handlers.development import show_development_menu
 from bot.handlers.group_events import get_group_events_handler
@@ -15,6 +15,10 @@ from bot.handlers.start import cmd_start, main_menu
 from bot.handlers.superadmin import get_superadmin_handler
 # from bot.handlers.supplier_search import get_supplier_search_handler  # Временно отключен
 from bot.models.base import init_db
+
+
+# Интервал проверки ответов на письма (в минутах)
+EMAIL_CHECK_INTERVAL = int(get_env("EMAIL_CHECK_INTERVAL", "5"))
 
 
 def setup_logging() -> None:
@@ -31,6 +35,39 @@ async def post_init(application) -> None:
     """Действия после инициализации бота."""
     logger.info("Инициализация базы данных")
     await init_db()
+    
+    # Запускаем периодическую проверку ответов на письма
+    await setup_email_reply_checker(application)
+
+
+async def setup_email_reply_checker(application) -> None:
+    """Настроить периодическую проверку ответов на письма."""
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from bot.services.reply_processor import check_email_replies_job
+    
+    # Проверяем, настроен ли IMAP
+    imap_user = get_env("GMAIL_IMAP_USER", "")
+    imap_password = get_env("GMAIL_IMAP_PASSWORD", "")
+    
+    if not imap_user or not imap_password:
+        logger.warning("IMAP не настроен — проверка ответов на письма отключена")
+        return
+    
+    scheduler = AsyncIOScheduler()
+    
+    # Добавляем задачу проверки ответов
+    scheduler.add_job(
+        check_email_replies_job,
+        "interval",
+        minutes=EMAIL_CHECK_INTERVAL,
+        args=[application.bot],
+        id="check_email_replies",
+        name="Проверка ответов на письма",
+        replace_existing=True,
+    )
+    
+    scheduler.start()
+    logger.info(f"Запущена проверка ответов на письма каждые {EMAIL_CHECK_INTERVAL} минут")
 
 
 def main() -> None:

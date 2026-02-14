@@ -285,13 +285,20 @@ async def locations_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "subject": context.user_data.get("new_supplier_subject", ""),
         "locations": text,
         "responsible": update.effective_user.username or str(update.effective_user.id),
+        "telegram_user_id": update.effective_user.id,  # Для отслеживания ответов
+        "folder_link": "",  # Будет заполнено после создания папки
+        "card_link": "",    # Будет заполнено после загрузки карточки
     }
     
     context.user_data["current_supplier_data"] = supplier_data
     
-    # Сохраняем в Google Sheets
+    # Примечание: НЕ сохраняем в Google Sheets здесь для сценария "заведение",
+    # т.к. нужно дождаться создания папки и загрузки карточки
+    scenario = context.user_data.get("supplier_add_scenario", "prorabotka")
+    
+    # Сохраняем в Google Sheets только для "проработки" (без папки/карточки)
     sheet_id = company_info.get("sheet_id")
-    if sheet_id:
+    if sheet_id and scenario == "prorabotka":
         success = await google_sheets_service.add_supplier(sheet_id, supplier_data)
         if success:
             logger.info(f"Поставщик добавлен в таблицу: {supplier_data['name']}")
@@ -356,16 +363,40 @@ async def card_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     logger.debug(f"Карточка скачана: {tmp_path}, size={tmp_path.stat().st_size}")
     
     # Загружаем в Google Drive
+    folder_link = ""
+    card_link = ""
+    
     if drive_folder_id:
         supplier_name = supplier_data.get("name", "Неизвестный")
         supplier_folder_id = create_supplier_folder(supplier_name, drive_folder_id)
         
         if supplier_folder_id:
+            # Сохраняем ссылку на папку
+            from bot.services.google_drive import get_folder_link
+            folder_link = get_folder_link(supplier_folder_id)
+            supplier_data["folder_link"] = folder_link
+            context.user_data["supplier_folder_link"] = folder_link
+            logger.info(f"Создана папка поставщика: {folder_link}")
+            
+            # Загружаем карточку
             card_file_id = upload_supplier_card(tmp_path, supplier_folder_id, filename, mime_type)
             if card_file_id:
                 card_link = get_file_link(card_file_id)
+                supplier_data["card_link"] = card_link
                 context.user_data["supplier_card_link"] = card_link
                 logger.info(f"Карточка загружена в Drive: {card_link}")
+    
+    # Обновляем supplier_data в контексте
+    context.user_data["current_supplier_data"] = supplier_data
+    
+    # Сохраняем в Google Sheets с ссылками
+    sheet_id = company_info.get("sheet_id")
+    if sheet_id:
+        success = await google_sheets_service.add_supplier(sheet_id, supplier_data)
+        if success:
+            logger.info(f"Поставщик добавлен в таблицу с ссылками: {supplier_data['name']}")
+        else:
+            logger.error("Ошибка добавления поставщика в таблицу")
     
     await update.message.reply_text(
         "📎 Карточка поставщика получена!\n\n"
@@ -394,6 +425,7 @@ async def _send_registration_emails(
 ) -> None:
     """Отправить 4 письма для заведения поставщика."""
     supplier_data = context.user_data.get("current_supplier_data", {})
+    company_info = context.user_data.get("supplier_add_company_info", {})
     
     supplier = SupplierData(
         name=supplier_data.get("name", ""),
@@ -410,6 +442,9 @@ async def _send_registration_emails(
     results = await send_supplier_registration_emails(
         supplier=supplier,
         card_path=card_path,
+        telegram_user_id=update.effective_user.id,
+        company_id=company_info.get("company_id"),
+        sheet_id=company_info.get("sheet_id"),
     )
     
     # Формируем отчёт

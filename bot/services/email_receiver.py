@@ -1,0 +1,332 @@
+"""Сервис получения входящих писем через IMAP."""
+from __future__ import annotations
+
+import asyncio
+import email
+import imaplib
+import tempfile
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.header import decode_header
+from email.message import Message
+from pathlib import Path
+from typing import List, Optional
+
+from loguru import logger
+
+from bot.config import get_env
+
+
+# Конфигурация IMAP
+IMAP_HOST = get_env("GMAIL_IMAP_HOST", "imap.gmail.com")
+IMAP_PORT = int(get_env("GMAIL_IMAP_PORT", "993"))
+IMAP_USER = get_env("GMAIL_IMAP_USER", "")
+IMAP_PASSWORD = get_env("GMAIL_IMAP_PASSWORD", "")
+
+
+@dataclass
+class EmailAttachment:
+    """Вложение из входящего письма."""
+    filename: str
+    content_type: str
+    data: bytes
+    temp_path: Optional[Path] = None
+    
+    def save_to_temp(self) -> Path:
+        """Сохранить вложение во временный файл."""
+        suffix = Path(self.filename).suffix or ""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(self.data)
+            self.temp_path = Path(tmp.name)
+        return self.temp_path
+    
+    def cleanup(self):
+        """Удалить временный файл."""
+        if self.temp_path and self.temp_path.exists():
+            try:
+                self.temp_path.unlink()
+            except Exception:
+                pass
+
+
+@dataclass
+class IncomingEmail:
+    """Входящее письмо."""
+    uid: str                           # UID письма в IMAP
+    message_id: str                    # Message-ID
+    in_reply_to: Optional[str]         # In-Reply-To header
+    references: List[str]              # References header (список Message-ID)
+    from_addr: str                     # От кого
+    to_addrs: List[str]                # Кому
+    subject: str                       # Тема
+    date: Optional[datetime]           # Дата
+    body_text: str                     # Текст письма
+    body_html: str                     # HTML версия
+    attachments: List[EmailAttachment] = field(default_factory=list)
+    
+    def cleanup_attachments(self):
+        """Удалить временные файлы вложений."""
+        for att in self.attachments:
+            att.cleanup()
+
+
+def _decode_header_value(value: str) -> str:
+    """Декодировать заголовок письма (может быть в разных кодировках)."""
+    if not value:
+        return ""
+    
+    try:
+        decoded_parts = decode_header(value)
+        result = []
+        for data, charset in decoded_parts:
+            if isinstance(data, bytes):
+                result.append(data.decode(charset or "utf-8", errors="replace"))
+            else:
+                result.append(data)
+        return "".join(result)
+    except Exception as e:
+        logger.warning(f"Ошибка декодирования заголовка: {e}")
+        return str(value)
+
+
+def _parse_email_message(raw_email: bytes, uid: str) -> Optional[IncomingEmail]:
+    """Распарсить сырое письмо в структуру IncomingEmail."""
+    try:
+        msg = email.message_from_bytes(raw_email)
+        
+        # Извлекаем заголовки
+        message_id = msg.get("Message-ID", "")
+        in_reply_to = msg.get("In-Reply-To", "")
+        references_raw = msg.get("References", "")
+        references = references_raw.split() if references_raw else []
+        
+        from_addr = _decode_header_value(msg.get("From", ""))
+        to_addrs = [_decode_header_value(addr.strip()) 
+                    for addr in msg.get("To", "").split(",")]
+        subject = _decode_header_value(msg.get("Subject", ""))
+        
+        # Дата
+        date_str = msg.get("Date", "")
+        email_date = None
+        if date_str:
+            try:
+                from email.utils import parsedate_to_datetime
+                email_date = parsedate_to_datetime(date_str)
+            except Exception:
+                pass
+        
+        # Извлекаем тело и вложения
+        body_text = ""
+        body_html = ""
+        attachments: List[EmailAttachment] = []
+        
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition", ""))
+                
+                # Вложение
+                if "attachment" in content_disposition:
+                    filename = part.get_filename()
+                    if filename:
+                        filename = _decode_header_value(filename)
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            attachments.append(EmailAttachment(
+                                filename=filename,
+                                content_type=content_type,
+                                data=payload,
+                            ))
+                # Текстовая часть
+                elif content_type == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        body_text = payload.decode(charset, errors="replace")
+                # HTML часть
+                elif content_type == "text/html":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        body_html = payload.decode(charset, errors="replace")
+        else:
+            # Не multipart
+            content_type = msg.get_content_type()
+            payload = msg.get_payload(decode=True)
+            if payload:
+                charset = msg.get_content_charset() or "utf-8"
+                if content_type == "text/plain":
+                    body_text = payload.decode(charset, errors="replace")
+                elif content_type == "text/html":
+                    body_html = payload.decode(charset, errors="replace")
+        
+        return IncomingEmail(
+            uid=uid,
+            message_id=message_id,
+            in_reply_to=in_reply_to,
+            references=references,
+            from_addr=from_addr,
+            to_addrs=to_addrs,
+            subject=subject,
+            date=email_date,
+            body_text=body_text,
+            body_html=body_html,
+            attachments=attachments,
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка парсинга письма: {e}", exc_info=True)
+        return None
+
+
+class EmailReceiver:
+    """Сервис получения входящих писем через IMAP."""
+    
+    def __init__(self):
+        self._connection: Optional[imaplib.IMAP4_SSL] = None
+    
+    def _check_config(self) -> bool:
+        """Проверить настройки IMAP."""
+        if not IMAP_USER or not IMAP_PASSWORD:
+            logger.warning("IMAP не настроен: GMAIL_IMAP_USER или GMAIL_IMAP_PASSWORD не заданы")
+            return False
+        return True
+    
+    def _connect(self) -> Optional[imaplib.IMAP4_SSL]:
+        """Подключиться к IMAP серверу."""
+        logger.debug(f"Подключение к IMAP: {IMAP_HOST}:{IMAP_PORT}")
+        
+        try:
+            conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+            conn.login(IMAP_USER, IMAP_PASSWORD)
+            logger.info("IMAP: подключение успешно")
+            return conn
+        except imaplib.IMAP4.error as e:
+            logger.error(f"IMAP ошибка аутентификации: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"IMAP ошибка подключения: {e}")
+            return None
+    
+    def _disconnect(self, conn: imaplib.IMAP4_SSL):
+        """Отключиться от IMAP сервера."""
+        try:
+            conn.logout()
+        except Exception:
+            pass
+    
+    async def fetch_replies(self, since_days: int = 7) -> List[IncomingEmail]:
+        """
+        Получить письма-ответы на наши отправленные письма.
+        
+        Ищет письма с In-Reply-To header, которые ссылаются на наши Message-ID.
+        
+        Args:
+            since_days: За сколько дней искать письма.
+            
+        Returns:
+            Список входящих писем.
+        """
+        logger.info(f"fetch_replies: checking emails for last {since_days} days")
+        
+        if not self._check_config():
+            return []
+        
+        def _fetch_sync() -> List[IncomingEmail]:
+            conn = self._connect()
+            if not conn:
+                return []
+            
+            try:
+                # Выбираем INBOX
+                conn.select("INBOX")
+                
+                # Ищем письма за последние N дней
+                from datetime import timedelta
+                since_date = (datetime.now() - timedelta(days=since_days)).strftime("%d-%b-%Y")
+                
+                # Поиск всех писем с In-Reply-To header за период
+                # IMAP не умеет искать по наличию header, поэтому получаем все за период
+                status, message_ids = conn.search(None, f'(SINCE "{since_date}")')
+                
+                if status != "OK":
+                    logger.error(f"IMAP search failed: {status}")
+                    return []
+                
+                emails: List[IncomingEmail] = []
+                
+                for uid in message_ids[0].split():
+                    try:
+                        # Получаем письмо
+                        status, data = conn.fetch(uid, "(RFC822)")
+                        if status != "OK":
+                            continue
+                        
+                        raw_email = data[0][1]
+                        parsed = _parse_email_message(raw_email, uid.decode())
+                        
+                        if parsed and parsed.in_reply_to:
+                            # Это ответ на какое-то письмо
+                            emails.append(parsed)
+                            logger.debug(f"Найден ответ: {parsed.subject} (in_reply_to={parsed.in_reply_to})")
+                    
+                    except Exception as e:
+                        logger.warning(f"Ошибка обработки письма {uid}: {e}")
+                        continue
+                
+                logger.info(f"Найдено писем-ответов: {len(emails)}")
+                return emails
+                
+            finally:
+                self._disconnect(conn)
+        
+        # Выполняем синхронную операцию в отдельном потоке
+        return await asyncio.to_thread(_fetch_sync)
+    
+    async def fetch_unprocessed_replies(self, since_days: int = 7) -> List[IncomingEmail]:
+        """
+        Получить только непрочитанные ответы на наши письма.
+        
+        Фильтрует по Message-ID из нашей БД sent_emails.
+        
+        Returns:
+            Список писем, которые являются ответами на наши отправленные.
+        """
+        from sqlalchemy import select
+        from bot.models.base import async_session_factory
+        from bot.models.sent_email import SentEmail
+        
+        # Получаем все письма-ответы
+        all_replies = await self.fetch_replies(since_days)
+        
+        if not all_replies:
+            return []
+        
+        # Получаем наши Message-ID из БД
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(SentEmail.message_id).where(SentEmail.reply_received == False)
+            )
+            our_message_ids = set(row[0] for row in result.fetchall())
+        
+        # Фильтруем только ответы на наши письма
+        matched_replies: List[IncomingEmail] = []
+        
+        for reply in all_replies:
+            # Проверяем In-Reply-To
+            if reply.in_reply_to and reply.in_reply_to in our_message_ids:
+                matched_replies.append(reply)
+                continue
+            
+            # Проверяем References
+            for ref in reply.references:
+                if ref in our_message_ids:
+                    matched_replies.append(reply)
+                    break
+        
+        logger.info(f"Из {len(all_replies)} ответов {len(matched_replies)} относятся к нашим письмам")
+        return matched_replies
+
+
+# Singleton instance
+email_receiver = EmailReceiver()
