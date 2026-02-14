@@ -68,18 +68,23 @@ async def start_supplier_complete(update: Update, context: ContextTypes.DEFAULT_
         )
         return ConversationHandler.END
     
-    sheet_id = company_info.get("sheet_id")
-    if not sheet_id:
+    sheet_id = company_info.sheet_id
+    if not sheet_id or not company_info.sheet_verified:
         is_superadmin = telegram_id in SUPERADMIN_IDS
         await update.message.reply_text(
-            "⚠️ У вашей компании не настроена таблица Google Sheets.\n"
+            f"⚠️ Для компании «{company_info.company_name}» не настроена Google Таблица.\n"
             "Обратитесь к администратору.",
             reply_markup=get_main_menu_keyboard(is_superadmin),
         )
         return ConversationHandler.END
     
-    # Сохраняем информацию о компании
-    context.user_data["complete_company_info"] = company_info
+    # Сохраняем информацию о компании как словарь
+    context.user_data["complete_company_info"] = {
+        "company_id": company_info.company_id,
+        "company_name": company_info.company_name,
+        "sheet_id": company_info.sheet_id,
+        "drive_folder_id": company_info.drive_folder_id,
+    }
     
     # Получаем незавершённые заявки
     await update.message.reply_text("🔍 Загружаю список незавершённых заявок...")
