@@ -187,7 +187,7 @@ async def supplier_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "📎 Загрузите договор и протокол (PDF, Word).\n"
         "Можно отправить несколько файлов.\n\n"
         "После загрузки нажмите Завершить.",
-        reply_markup=_get_documents_keyboard(False),
+        reply_markup=_get_documents_keyboard(True),  # Кнопка "Завершить" сразу видна
     )
     
     return SC_DOCUMENTS
@@ -228,17 +228,14 @@ async def document_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     logger.debug(f"Файл скачан: {tmp_path}, name={filename}, size={tmp_path.stat().st_size}")
     
-    # Добавляем в список файлов
+    # Добавляем в список файлов (молча, без сообщения)
     files = context.user_data.get("complete_files", [])
     files.append({"name": filename, "path": tmp_path})
     context.user_data["complete_files"] = files
     
-    await update.message.reply_text(
-        f"✅ Файл добавлен: {filename}\n\n"
-        "Добавьте ещё файлы или нажмите Завершить.",
-        reply_markup=_get_documents_keyboard(True),
-    )
+    logger.info(f"Файл добавлен: {filename}, всего файлов: {len(files)}")
     
+    # Не отправляем сообщение — кнопка "Завершить" уже есть в начальном сообщении
     return SC_DOCUMENTS
 
 
