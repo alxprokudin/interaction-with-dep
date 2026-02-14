@@ -64,6 +64,7 @@ class IncomingEmail:
     body_html: str                     # HTML версия
     attachments: List[EmailAttachment] = field(default_factory=list)
     matched_message_id: Optional[str] = None  # Message-ID нашего письма (заполняется при сопоставлении)
+    matched_tracking_code: Optional[str] = None  # Код заявки [ML-XXXXX] из темы
     
     def cleanup_attachments(self):
         """Удалить временные файлы вложений."""
@@ -299,8 +300,8 @@ class EmailReceiver:
         """
         Получить только непрочитанные ответы на наши письма.
         
-        Фильтрует по Message-ID из нашей БД sent_emails.
-        Также ищет по теме письма + ИНН для систем, не использующих In-Reply-To.
+        Основной способ поиска: по коду заявки [ML-XXXXX] в теме.
+        Fallback: по In-Reply-To / References.
         
         Returns:
             Список писем, которые являются ответами на наши отправленные.
@@ -309,6 +310,7 @@ class EmailReceiver:
         from sqlalchemy import select
         from bot.models.base import async_session_factory
         from bot.models.sent_email import SentEmail
+        from bot.services.email_service import extract_tracking_code
         
         # Получаем все письма-ответы
         all_replies = await self.fetch_replies(since_days)
@@ -323,14 +325,21 @@ class EmailReceiver:
             )
             pending_emails = result.scalars().all()
         
+        if not pending_emails:
+            logger.debug("Нет ожидающих ответа писем")
+            return []
+        
         # Строим индексы для поиска
         our_message_ids = {e.message_id for e in pending_emails}
-        # ИНН -> список отправленных писем (для fallback поиска по теме)
-        inn_to_emails: dict[str, list] = {}
-        for email in pending_emails:
-            if email.supplier_inn not in inn_to_emails:
-                inn_to_emails[email.supplier_inn] = []
-            inn_to_emails[email.supplier_inn].append(email)
+        
+        # tracking_code -> список отправленных писем (для поиска по коду в теме)
+        code_to_emails: dict[str, list] = {}
+        for email_obj in pending_emails:
+            if hasattr(email_obj, 'tracking_code') and email_obj.tracking_code:
+                code = email_obj.tracking_code
+                if code not in code_to_emails:
+                    code_to_emails[code] = []
+                code_to_emails[code].append(email_obj)
         
         # Фильтруем только ответы на наши письма
         matched_replies: List[IncomingEmail] = []
@@ -338,52 +347,66 @@ class EmailReceiver:
         
         for reply in all_replies:
             matched_email = None
+            matched_code = None
+            subject_lower = reply.subject.lower() if reply.subject else ""
             
-            # 1. Проверяем In-Reply-To
-            if reply.in_reply_to and reply.in_reply_to in our_message_ids:
-                matched_email = reply.in_reply_to
+            # 1. ОСНОВНОЙ СПОСОБ: ищем код [ML-XXXXX] в теме
+            tracking_code = extract_tracking_code(reply.subject)
+            if tracking_code and tracking_code in code_to_emails:
+                # Определяем тип письма по ключевым словам
+                for email_obj in code_to_emails[tracking_code]:
+                    if email_obj.message_id in matched_message_ids:
+                        continue
+                    
+                    # Сопоставляем тип письма с темой
+                    email_type = email_obj.email_type.value
+                    if email_type == "roaming" and "роуминг" in subject_lower:
+                        matched_email = email_obj.message_id
+                        matched_code = tracking_code
+                        logger.debug(f"Match by code: roaming, code={tracking_code}")
+                        break
+                    elif email_type == "sb_check" and ("сб" in subject_lower or "проверк" in subject_lower):
+                        matched_email = email_obj.message_id
+                        matched_code = tracking_code
+                        logger.debug(f"Match by code: sb_check, code={tracking_code}")
+                        break
+                    elif email_type == "docsinbox" and ("docsinbox" in subject_lower or "настройк" in subject_lower):
+                        matched_email = email_obj.message_id
+                        matched_code = tracking_code
+                        logger.debug(f"Match by code: docsinbox, code={tracking_code}")
+                        break
+                    elif email_type == "documents" and "документ" in subject_lower:
+                        matched_email = email_obj.message_id
+                        matched_code = tracking_code
+                        logger.debug(f"Match by code: documents, code={tracking_code}")
+                        break
+                
+                # Если код найден, но не можем определить тип — берем первый неотвеченный
+                if not matched_email and code_to_emails[tracking_code]:
+                    for email_obj in code_to_emails[tracking_code]:
+                        if email_obj.message_id not in matched_message_ids:
+                            matched_email = email_obj.message_id
+                            matched_code = tracking_code
+                            logger.debug(f"Match by code (any type): code={tracking_code}")
+                            break
             
-            # 2. Проверяем References
+            # 2. Fallback: проверяем In-Reply-To
+            if not matched_email:
+                if reply.in_reply_to and reply.in_reply_to in our_message_ids:
+                    matched_email = reply.in_reply_to
+                    logger.debug(f"Match by In-Reply-To: {matched_email}")
+            
+            # 3. Fallback: проверяем References
             if not matched_email:
                 for ref in reply.references:
                     if ref in our_message_ids:
                         matched_email = ref
+                        logger.debug(f"Match by References: {matched_email}")
                         break
             
-            # 3. Fallback: поиск по теме + ИНН (для систем без In-Reply-To)
-            if not matched_email and reply.subject:
-                subject_lower = reply.subject.lower()
-                # Ищем ИНН в теме письма
-                for inn, emails in inn_to_emails.items():
-                    if inn in reply.subject:
-                        # Определяем тип письма по ключевым словам в теме
-                        for email in emails:
-                            if email.message_id in matched_message_ids:
-                                continue
-                            
-                            # Сопоставляем тип письма с темой
-                            if email.email_type.value == "roaming" and "роуминг" in subject_lower:
-                                matched_email = email.message_id
-                                logger.debug(f"Fallback match: roaming для ИНН {inn}")
-                                break
-                            elif email.email_type.value == "sb_check" and "проверк" in subject_lower and "сб" in subject_lower:
-                                matched_email = email.message_id
-                                logger.debug(f"Fallback match: sb_check для ИНН {inn}")
-                                break
-                            elif email.email_type.value == "docsinbox" and ("настройка" in subject_lower or "docsinbox" in subject_lower):
-                                matched_email = email.message_id
-                                logger.debug(f"Fallback match: docsinbox для ИНН {inn}")
-                                break
-                            elif email.email_type.value == "documents" and "документ" in subject_lower:
-                                matched_email = email.message_id
-                                logger.debug(f"Fallback match: documents для ИНН {inn}")
-                                break
-                        if matched_email:
-                            break
-            
             if matched_email and matched_email not in matched_message_ids:
-                # Добавляем matched_message_id к reply для дальнейшей обработки
                 reply.matched_message_id = matched_email
+                reply.matched_tracking_code = matched_code
                 matched_replies.append(reply)
                 matched_message_ids.add(matched_email)
         

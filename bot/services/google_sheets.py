@@ -319,6 +319,8 @@ class GoogleSheetsService:
             O: Ответ Роуминг
             P: Ответ Документы
             Q: Telegram ID
+            R: Telegram Username
+            S: Код заявки
             
         Returns:
             Успешность операции
@@ -346,6 +348,8 @@ class GoogleSheetsService:
             "",                                            # O: Ответ Роуминг (пусто)
             "",                                            # P: Ответ Документы (пусто)
             str(supplier_data.get("telegram_user_id", "")),# Q: Telegram ID
+            supplier_data.get("telegram_username", ""),    # R: Telegram Username
+            supplier_data.get("tracking_code", ""),        # S: Код заявки
         ]
         
         return await self.append_row(sheet_id, worksheet_name, row)
@@ -415,6 +419,73 @@ class GoogleSheetsService:
             return await asyncio.to_thread(_update)
         except Exception as e:
             logger.error(f"Ошибка обновления статуса: {e}", exc_info=True)
+            return False
+    
+    async def update_reply_by_tracking_code(
+        self,
+        sheet_id: str,
+        tracking_code: str,
+        email_type: str,
+        worksheet_name: str = "Реестр_Поставщики",
+    ) -> bool:
+        """
+        Обновить статус ответа по коду заявки.
+        
+        Args:
+            sheet_id: ID таблицы
+            tracking_code: Уникальный код заявки (ML-XXXXX)
+            email_type: Тип письма
+            worksheet_name: Название листа
+            
+        Returns:
+            Успешность операции
+        """
+        import asyncio
+        from datetime import datetime
+        
+        logger.info(f"update_reply_by_tracking_code: code={tracking_code}, type={email_type}")
+        
+        # Колонки для разных типов писем
+        column_map = {
+            "sb_check": "M",
+            "docsinbox": "N",
+            "roaming": "O",
+            "documents": "P",
+        }
+        
+        column = column_map.get(email_type)
+        if not column:
+            logger.error(f"Неизвестный тип письма: {email_type}")
+            return False
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return False
+        
+        try:
+            def _update():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                # Ищем строку по коду заявки (колонка S = 19)
+                cell = worksheet.find(tracking_code, in_column=19)
+                if not cell:
+                    logger.warning(f"Заявка с кодом {tracking_code} не найдена")
+                    return False
+                
+                # Обновляем ячейку с датой ответа
+                cell_address = f"{column}{cell.row}"
+                worksheet.update_acell(
+                    cell_address,
+                    datetime.now().strftime("%d.%m.%Y %H:%M")
+                )
+                logger.info(f"Обновлена ячейка {cell_address} для кода {tracking_code}")
+                return True
+            
+            return await asyncio.to_thread(_update)
+        except Exception as e:
+            logger.error(f"Ошибка обновления по коду: {e}", exc_info=True)
             return False
 
 

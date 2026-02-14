@@ -275,6 +275,10 @@ async def locations_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     dadata = context.user_data.get("new_supplier_dadata")
     company_info = context.user_data.get("supplier_add_company_info", {})
     
+    # Получаем username для Telegram
+    user = update.effective_user
+    telegram_username = f"@{user.username}" if user.username else user.full_name or str(user.id)
+    
     supplier_data = {
         "inn": dadata.inn if dadata else "",
         "kpp": dadata.kpp if dadata else "-",
@@ -284,10 +288,12 @@ async def locations_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "contact_name": context.user_data.get("new_supplier_contact", ""),
         "subject": context.user_data.get("new_supplier_subject", ""),
         "locations": text,
-        "responsible": update.effective_user.username or str(update.effective_user.id),
-        "telegram_user_id": update.effective_user.id,  # Для отслеживания ответов
+        "responsible": user.username or str(user.id),
+        "telegram_user_id": user.id,           # Для отслеживания ответов
+        "telegram_username": telegram_username, # Читаемое имя пользователя
         "folder_link": "",  # Будет заполнено после создания папки
         "card_link": "",    # Будет заполнено после загрузки карточки
+        "tracking_code": "",  # Будет заполнено после отправки писем
     }
     
     context.user_data["current_supplier_data"] = supplier_data
@@ -386,10 +392,16 @@ async def card_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 context.user_data["supplier_card_link"] = card_link
                 logger.info(f"Карточка загружена в Drive: {card_link}")
     
+    # Генерируем tracking_code ДО сохранения в таблицу
+    from bot.services.email_service import generate_tracking_code
+    tracking_code = generate_tracking_code()
+    supplier_data["tracking_code"] = tracking_code
+    logger.info(f"Сгенерирован tracking_code: {tracking_code}")
+    
     # Обновляем supplier_data в контексте
     context.user_data["current_supplier_data"] = supplier_data
     
-    # Сохраняем в Google Sheets с ссылками
+    # Сохраняем в Google Sheets с ссылками и tracking_code
     sheet_id = company_info.get("sheet_id")
     if sheet_id:
         success = await google_sheets_service.add_supplier(sheet_id, supplier_data)
@@ -404,8 +416,8 @@ async def card_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         parse_mode="Markdown",
     )
     
-    # Отправляем 4 письма
-    await _send_registration_emails(update, context, tmp_path if tmp_path.exists() else None)
+    # Отправляем 4 письма (передаём tracking_code)
+    await _send_registration_emails(update, context, tmp_path if tmp_path.exists() else None, tracking_code)
     
     # Завершаем
     is_superadmin = update.effective_user.id in SUPERADMIN_IDS
@@ -422,6 +434,7 @@ async def _send_registration_emails(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     card_path: Path = None,
+    tracking_code: str = None,
 ) -> None:
     """Отправить 4 письма для заведения поставщика."""
     supplier_data = context.user_data.get("current_supplier_data", {})
@@ -437,7 +450,7 @@ async def _send_registration_emails(
         delivery_points=supplier_data.get("locations", ""),
     )
     
-    logger.info(f"Отправка писем для поставщика: {supplier.name}")
+    logger.info(f"Отправка писем для поставщика: {supplier.name}, tracking_code={tracking_code}")
     
     results = await send_supplier_registration_emails(
         supplier=supplier,
@@ -445,11 +458,18 @@ async def _send_registration_emails(
         telegram_user_id=update.effective_user.id,
         company_id=company_info.get("company_id"),
         sheet_id=company_info.get("sheet_id"),
+        tracking_code=tracking_code,
     )
     
+    # Tracking_code уже сохранён в supplier_data и передан в send_supplier_registration_emails
+    # Получаем его из результатов для отображения (на случай если был сгенерирован внутри)
+    final_tracking_code = results.get("tracking_code", tracking_code or "")
+    
     # Формируем отчёт
-    sent_count = sum(1 for v in results.values() if v)
-    total = len(results)
+    # Учитываем, что tracking_code не является результатом отправки
+    email_results = {k: v for k, v in results.items() if k != "tracking_code"}
+    sent_count = sum(1 for v in email_results.values() if v)
+    total = len(email_results)
     
     status_lines = []
     status_lines.append(f"1️⃣ СБ (Ol.Pak): {'✅' if results.get('email_1_sb') else '❌'}")
@@ -459,9 +479,13 @@ async def _send_registration_emails(
     
     status_text = "\n".join(status_lines)
     
+    # Добавляем код заявки в сообщение для пользователя
+    tracking_info = f"\n\n📋 Код заявки: *{final_tracking_code}*" if final_tracking_code else ""
+    
     await update.message.reply_text(
         f"📧 *Отправка на заведение: {sent_count}/{total}*\n\n"
-        f"{status_text}",
+        f"{status_text}"
+        f"{tracking_info}",
         parse_mode="Markdown",
     )
 

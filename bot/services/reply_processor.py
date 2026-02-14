@@ -136,11 +136,27 @@ async def process_email_replies(bot: Bot) -> int:
             # Обновляем статус в Google Sheets
             if sent_email.sheet_id:
                 from bot.services.google_sheets import google_sheets_service
-                await google_sheets_service.update_supplier_reply_status(
-                    sheet_id=sent_email.sheet_id,
-                    supplier_inn=sent_email.supplier_inn,
-                    email_type=sent_email.email_type.value,
-                )
+                
+                # Используем tracking_code как основной способ поиска строки
+                tracking_code = getattr(sent_email, 'tracking_code', None) or reply.matched_tracking_code
+                
+                if tracking_code:
+                    # Обновляем по коду заявки (более надежно)
+                    updated = await google_sheets_service.update_reply_by_tracking_code(
+                        sheet_id=sent_email.sheet_id,
+                        tracking_code=tracking_code,
+                        email_type=sent_email.email_type.value,
+                    )
+                else:
+                    # Fallback: обновляем по ИНН
+                    updated = await google_sheets_service.update_supplier_reply_status(
+                        sheet_id=sent_email.sheet_id,
+                        supplier_inn=sent_email.supplier_inn,
+                        email_type=sent_email.email_type.value,
+                    )
+                
+                if not updated:
+                    logger.warning(f"Не удалось обновить статус в таблице для {sent_email.supplier_inn}")
             
             # Отправляем уведомление пользователю в Telegram
             await notify_user_about_reply(

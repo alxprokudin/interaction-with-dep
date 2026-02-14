@@ -30,6 +30,9 @@ class SentEmail(Base):
     # Идентификация письма
     message_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     
+    # Уникальный код заявки для отслеживания (в теме письма: [ML-XXXXX])
+    tracking_code: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    
     # Связь с поставщиком
     supplier_inn: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     supplier_name: Mapped[str] = mapped_column(String(255), nullable=True)

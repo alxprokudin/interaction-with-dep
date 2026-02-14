@@ -83,6 +83,22 @@ class EmailMessage:
             self.attachments = []
 
 
+def generate_tracking_code() -> str:
+    """
+    Генерирует уникальный код заявки для отслеживания.
+    
+    Формат: ML-XXXXX (5 символов: буквы + цифры)
+    Этот код включается в тему всех писем и позволяет 100% найти ответ.
+    """
+    import random
+    import string
+    chars = string.ascii_uppercase + string.digits
+    code = ''.join(random.choices(chars, k=5))
+    tracking_code = f"ML-{code}"
+    logger.debug(f"generate_tracking_code: {tracking_code}")
+    return tracking_code
+
+
 def generate_message_id(email_type: str, supplier_inn: str) -> str:
     """
     Генерирует уникальный Message-ID для письма.
@@ -94,6 +110,20 @@ def generate_message_id(email_type: str, supplier_inn: str) -> str:
     message_id = f"<{unique_id}.{email_type}.{supplier_inn}@mnogolososya.ru>"
     logger.debug(f"generate_message_id: {message_id}")
     return message_id
+
+
+def extract_tracking_code(subject: str) -> Optional[str]:
+    """
+    Извлечь код заявки [ML-XXXXX] из темы письма.
+    
+    Returns:
+        Код заявки или None.
+    """
+    import re
+    match = re.search(r'\[ML-([A-Z0-9]{5})\]', subject)
+    if match:
+        return f"ML-{match.group(1)}"
+    return None
 
 
 def parse_message_id(message_id: str) -> Optional[tuple[str, str]]:
@@ -294,6 +324,7 @@ def _log_email(email: EmailMessage) -> None:
 
 async def save_sent_email(
     message_id: str,
+    tracking_code: str,
     supplier_inn: str,
     supplier_name: str,
     email_type: str,
@@ -313,7 +344,7 @@ async def save_sent_email(
     from bot.models.base import async_session_factory
     from bot.models.sent_email import SentEmail, EmailType
     
-    logger.debug(f"save_sent_email: message_id={message_id}, type={email_type}")
+    logger.debug(f"save_sent_email: message_id={message_id}, tracking_code={tracking_code}, type={email_type}")
     
     try:
         # Преобразуем строку в EmailType
@@ -322,6 +353,7 @@ async def save_sent_email(
         async with async_session_factory() as session:
             sent_email = SentEmail(
                 message_id=message_id,
+                tracking_code=tracking_code,
                 supplier_inn=supplier_inn,
                 supplier_name=supplier_name,
                 email_type=email_type_enum,
@@ -399,7 +431,11 @@ async def mark_reply_received(message_id: str, reply_message_id: str = None) -> 
 
 # ============ ШАБЛОНЫ ПИСЕМ ДЛЯ ЗАВЕДЕНИЯ ПОСТАВЩИКА ============
 
-def create_email_1_sb_check(supplier: SupplierData, card_path: Optional[Path] = None) -> EmailMessage:
+def create_email_1_sb_check(
+    supplier: SupplierData, 
+    card_path: Optional[Path] = None,
+    tracking_code: str = "",
+) -> EmailMessage:
     """
     Письмо 1: Проверка СБ.
     To: Pak, Olga <Ol.Pak@x5.ru>
@@ -418,16 +454,19 @@ GUID: {COMPANY_GUID}
     
     attachments = [card_path] if card_path and card_path.exists() else []
     
+    # Код заявки в теме для отслеживания ответов
+    code_prefix = f"[{tracking_code}] " if tracking_code else ""
+    
     return EmailMessage(
         to=["Ol.Pak@x5.ru"],
         cc=DEFAULT_CC.copy(),
-        subject=f"Новый поставщик на проверку СБ - \"{supplier.name}\" {supplier.inn}",
+        subject=f"{code_prefix}Новый поставщик на проверку СБ - \"{supplier.name}\" {supplier.inn}",
         body=body,
         attachments=attachments,
     )
 
 
-def create_email_2_docsinbox(supplier: SupplierData) -> EmailMessage:
+def create_email_2_docsinbox(supplier: SupplierData, tracking_code: str = "") -> EmailMessage:
     """
     Письмо 2: Настройка в DocsInBox.
     To: m.chernykh@docsinbox.ru
@@ -448,15 +487,17 @@ Email Менеджера: {supplier.contact_email}
 GUID: {COMPANY_GUID}
 """
     
+    code_prefix = f"[{tracking_code}] " if tracking_code else ""
+    
     return EmailMessage(
         to=["m.chernykh@docsinbox.ru"],
         cc=DEFAULT_CC.copy(),
-        subject=f"Настройка поставщика для МЛ - {supplier.name} {supplier.inn}",
+        subject=f"{code_prefix}Настройка поставщика для МЛ - {supplier.name} {supplier.inn}",
         body=body,
     )
 
 
-def create_email_3_roaming(supplier: SupplierData) -> EmailMessage:
+def create_email_3_roaming(supplier: SupplierData, tracking_code: str = "") -> EmailMessage:
     """
     Письмо 3: Настройка роуминга.
     To: edi_request@skbkontur.ru
@@ -476,10 +517,12 @@ GUID: {COMPANY_GUID}
     cc = DEFAULT_CC.copy()
     cc.insert(0, "l.ermakova@skbkontur.ru")
     
+    code_prefix = f"[{tracking_code}] " if tracking_code else ""
+    
     return EmailMessage(
         to=["edi_request@skbkontur.ru"],
         cc=cc,
-        subject=f"Настройка роуминга - {supplier.name} {supplier.inn}",
+        subject=f"{code_prefix}Настройка роуминга - {supplier.name} {supplier.inn}",
         body=body,
     )
 
@@ -487,6 +530,7 @@ GUID: {COMPANY_GUID}
 def create_email_4_documents(
     supplier: SupplierData,
     document_files: Optional[List[Path]] = None,
+    tracking_code: str = "",
 ) -> EmailMessage:
     """
     Письмо 4: Документы для заключения договора.
@@ -513,11 +557,12 @@ def create_email_4_documents(
 """
     
     attachments = document_files or []
+    code_prefix = f"[{tracking_code}] " if tracking_code else ""
     
     return EmailMessage(
         to=[supplier.contact_email] if supplier.contact_email else [],
         cc=DEFAULT_CC.copy(),
-        subject=f"Документы {COMPANY_NAME} (Рестораны Много лосося) - {supplier.name} {supplier.inn}",
+        subject=f"{code_prefix}Документы {COMPANY_NAME} (Рестораны Много лосося) - {supplier.name} {supplier.inn}",
         body=body,
         attachments=attachments,
     )
@@ -572,6 +617,7 @@ async def send_supplier_registration_emails(
     telegram_user_id: int = 0,
     company_id: Optional[int] = None,
     sheet_id: Optional[str] = None,
+    tracking_code: Optional[str] = None,
 ) -> dict:
     """
     Отправить все 4 письма для регистрации поставщика.
@@ -582,13 +628,18 @@ async def send_supplier_registration_emails(
         telegram_user_id: ID пользователя Telegram (для уведомлений об ответах)
         company_id: ID компании
         sheet_id: ID таблицы Google Sheets
+        tracking_code: Уникальный код заявки (если не указан — генерируется)
     
     Returns:
-        Словарь с результатами: {"email_1": True/False, ...}
+        Словарь с результатами: {"email_1": True/False, ..., "tracking_code": "ML-XXXXX"}
     """
-    logger.info(f"send_supplier_registration_emails: supplier={supplier.name}, user_id={telegram_user_id}")
+    # Генерируем код заявки один раз для всех писем
+    if not tracking_code:
+        tracking_code = generate_tracking_code()
     
-    results = {}
+    logger.info(f"send_supplier_registration_emails: supplier={supplier.name}, user_id={telegram_user_id}, tracking_code={tracking_code}")
+    
+    results = {"tracking_code": tracking_code}
     downloaded_files: list[Path] = []
     
     async def send_and_save(email: EmailMessage, email_type: str) -> bool:
@@ -604,6 +655,7 @@ async def send_supplier_registration_emails(
         if telegram_user_id:
             await save_sent_email(
                 message_id=message_id,
+                tracking_code=tracking_code,
                 supplier_inn=supplier.inn,
                 supplier_name=supplier.name,
                 email_type=email_type,
@@ -619,15 +671,15 @@ async def send_supplier_registration_emails(
     
     try:
         # Письмо 1: Проверка СБ
-        email_1 = create_email_1_sb_check(supplier, card_path)
+        email_1 = create_email_1_sb_check(supplier, card_path, tracking_code)
         results["email_1_sb"] = await send_and_save(email_1, "sb_check")
         
         # Письмо 2: DocsInBox
-        email_2 = create_email_2_docsinbox(supplier)
+        email_2 = create_email_2_docsinbox(supplier, tracking_code)
         results["email_2_docsinbox"] = await send_and_save(email_2, "docsinbox")
         
         # Письмо 3: Роуминг
-        email_3 = create_email_3_roaming(supplier)
+        email_3 = create_email_3_roaming(supplier, tracking_code)
         results["email_3_roaming"] = await send_and_save(email_3, "roaming")
         
         # Письмо 4: Документы для поставщика
@@ -665,7 +717,7 @@ async def send_supplier_registration_emails(
                 if downloaded_files:
                     total_size = sum(f[1].stat().st_size for f in downloaded_files) / 1024 / 1024
                     logger.info(f"Всего скачано {len(downloaded_files)} файлов, общий размер: {total_size:.2f} MB")
-                    email_4 = create_email_4_documents(supplier, downloaded_files)
+                    email_4 = create_email_4_documents(supplier, downloaded_files, tracking_code)
                     results["email_4_documents"] = await send_and_save(email_4, "documents")
                 else:
                     logger.error("Не удалось скачать ни одного документа")
