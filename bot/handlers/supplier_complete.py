@@ -19,7 +19,6 @@ from telegram.ext import (
 )
 
 from bot.keyboards.main import get_main_menu_keyboard
-from bot.keyboards.product_registration import get_cancel_keyboard
 from bot.config import SUPERADMIN_IDS
 from bot.services.database import get_user_company_info
 from bot.services.google_sheets import google_sheets_service
@@ -33,15 +32,12 @@ from bot.services.email_service import (
 # Состояния диалога
 (
     SC_SELECT,      # Выбор поставщика из списка
-    SC_CONTRACT,    # Загрузка договора
-    SC_PROTOCOL,    # Загрузка протокола (опционально)
-) = range(3)
+    SC_DOCUMENTS,   # Загрузка документов (договор + протокол)
+) = range(2)
 
 
 def _extract_folder_id_from_link(link: str) -> Optional[str]:
     """Извлечь ID папки из ссылки Google Drive."""
-    # https://drive.google.com/drive/folders/FOLDER_ID
-    # https://drive.google.com/drive/folders/FOLDER_ID?usp=sharing
     if not link:
         return None
     
@@ -49,6 +45,18 @@ def _extract_folder_id_from_link(link: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
+
+
+def _get_documents_keyboard(files_count: int) -> InlineKeyboardMarkup:
+    """Клавиатура для состояния загрузки документов."""
+    buttons = []
+    if files_count > 0:
+        buttons.append([InlineKeyboardButton(
+            f"✅ Завершить ({files_count} файл(ов))", 
+            callback_data="sc_finish"
+        )])
+    buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="sc_cancel")])
+    return InlineKeyboardMarkup(buttons)
 
 
 async def start_supplier_complete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -174,127 +182,94 @@ async def supplier_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "tracking_code": supplier.get("tracking_code", ""),
     }
     
+    # Инициализируем список загруженных файлов
+    context.user_data["complete_files"] = []
+    
     await query.edit_message_text(
         f"✅ Выбран поставщик: *{supplier.get('name', '')}*\n"
         f"ИНН: {supplier.get('inn', '')}\n\n"
-        "📎 Теперь загрузите *договор* (PDF, Word).\n\n"
-        "Файл будет сохранён в папку поставщика и отправлен бухгалтеру.",
+        "📎 Загрузите *договор и протокол* (PDF, Word).\n"
+        "Можно отправить несколько файлов.\n\n"
+        "После загрузки нажмите *Завершить*.",
         parse_mode="Markdown",
+        reply_markup=_get_documents_keyboard(0),
     )
     
-    return SC_CONTRACT
+    return SC_DOCUMENTS
 
 
-async def contract_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка загрузки договора."""
-    logger.info("contract_uploaded called")
+async def document_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка загрузки документа (договора или протокола)."""
+    logger.info("document_uploaded called")
     
     # Определяем тип файла
-    if update.message.document:
-        file = await update.message.document.get_file()
-        filename = update.message.document.file_name
-        mime_type = update.message.document.mime_type or "application/octet-stream"
-    else:
+    if not update.message.document:
+        files = context.user_data.get("complete_files", [])
         await update.message.reply_text(
-            "❌ Пожалуйста, отправьте файл договора (PDF или Word).",
-            reply_markup=get_cancel_keyboard(),
+            "❌ Пожалуйста, отправьте файл (PDF или Word).",
+            reply_markup=_get_documents_keyboard(len(files)),
         )
-        return SC_CONTRACT
+        return SC_DOCUMENTS
+    
+    file = await update.message.document.get_file()
+    filename = update.message.document.file_name
     
     # Проверяем расширение
     allowed_extensions = {".pdf", ".doc", ".docx"}
     file_ext = Path(filename).suffix.lower()
     if file_ext not in allowed_extensions:
+        files = context.user_data.get("complete_files", [])
         await update.message.reply_text(
-            f"❌ Неподдерживаемый формат файла: {file_ext}\n"
+            f"❌ Неподдерживаемый формат: {file_ext}\n"
             "Допустимые форматы: PDF, DOC, DOCX",
-            reply_markup=get_cancel_keyboard(),
+            reply_markup=_get_documents_keyboard(len(files)),
         )
-        return SC_CONTRACT
+        return SC_DOCUMENTS
     
     # Скачиваем файл
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
         await file.download_to_drive(tmp.name)
         tmp_path = Path(tmp.name)
     
-    logger.debug(f"Договор скачан: {tmp_path}, size={tmp_path.stat().st_size}")
+    logger.debug(f"Файл скачан: {tmp_path}, name={filename}, size={tmp_path.stat().st_size}")
     
-    # Сохраняем путь и имя файла
-    context.user_data["complete_contract_path"] = tmp_path
-    context.user_data["complete_contract_name"] = filename
+    # Добавляем в список файлов
+    files = context.user_data.get("complete_files", [])
+    files.append({"name": filename, "path": tmp_path})
+    context.user_data["complete_files"] = files
+    
+    # Формируем список загруженных файлов
+    files_list = "\n".join([f"• {f['name']}" for f in files])
     
     await update.message.reply_text(
-        f"✅ Договор *{filename}* получен!\n\n"
-        "📎 Теперь загрузите *протокол разногласий* (PDF, Word).\n\n"
-        "Если протокола нет — нажмите кнопку *Пропустить*.",
+        f"✅ Файл *{filename}* добавлен!\n\n"
+        f"*Загружено файлов:* {len(files)}\n{files_list}\n\n"
+        "Добавьте ещё файлы или нажмите *Завершить*.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭ Пропустить протокол", callback_data="sc_skip_protocol")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="sc_cancel")],
-        ]),
+        reply_markup=_get_documents_keyboard(len(files)),
     )
     
-    return SC_PROTOCOL
+    return SC_DOCUMENTS
 
 
-async def protocol_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка загрузки протокола."""
-    logger.info("protocol_uploaded called")
-    
-    # Определяем тип файла
-    if update.message.document:
-        file = await update.message.document.get_file()
-        filename = update.message.document.file_name
-        mime_type = update.message.document.mime_type or "application/octet-stream"
-    else:
-        await update.message.reply_text(
-            "❌ Пожалуйста, отправьте файл протокола (PDF или Word) "
-            "или нажмите кнопку Пропустить.",
-        )
-        return SC_PROTOCOL
-    
-    # Проверяем расширение
-    allowed_extensions = {".pdf", ".doc", ".docx"}
-    file_ext = Path(filename).suffix.lower()
-    if file_ext not in allowed_extensions:
-        await update.message.reply_text(
-            f"❌ Неподдерживаемый формат файла: {file_ext}\n"
-            "Допустимые форматы: PDF, DOC, DOCX",
-        )
-        return SC_PROTOCOL
-    
-    # Скачиваем файл
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
-        await file.download_to_drive(tmp.name)
-        tmp_path = Path(tmp.name)
-    
-    logger.debug(f"Протокол скачан: {tmp_path}, size={tmp_path.stat().st_size}")
-    
-    # Сохраняем путь и имя файла
-    context.user_data["complete_protocol_path"] = tmp_path
-    context.user_data["complete_protocol_name"] = filename
-    
-    # Завершаем процесс
-    return await _finalize_completion(update, context)
-
-
-async def skip_protocol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Пропустить загрузку протокола."""
+async def finish_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершить загрузку и обработать файлы."""
     query = update.callback_query
     await query.answer()
     
-    logger.info("skip_protocol called")
+    logger.info("finish_upload called")
     
-    if query.data == "sc_cancel":
-        return await cancel_handler(update, context)
+    files = context.user_data.get("complete_files", [])
     
-    # Протокол не загружен
-    context.user_data["complete_protocol_path"] = None
-    context.user_data["complete_protocol_name"] = None
+    if not files:
+        await query.edit_message_text(
+            "❌ Необходимо загрузить хотя бы один файл (договор).",
+            reply_markup=_get_documents_keyboard(0),
+        )
+        return SC_DOCUMENTS
     
     await query.edit_message_text("⏳ Завершаю оформление заявки...")
     
-    # Завершаем процесс
     return await _finalize_completion(update, context, from_callback=True)
 
 
@@ -308,17 +283,13 @@ async def _finalize_completion(
     
     supplier_info = context.user_data.get("complete_supplier_info", {})
     company_info = context.user_data.get("complete_company_info", {})
+    files = context.user_data.get("complete_files", [])
     
     folder_id = supplier_info.get("folder_id")
     supplier_name = supplier_info.get("name", "")
     supplier_inn = supplier_info.get("inn", "")
     row_number = supplier_info.get("row_number")
     sheet_id = company_info.get("sheet_id")
-    
-    contract_path = context.user_data.get("complete_contract_path")
-    contract_name = context.user_data.get("complete_contract_name", "Договор")
-    protocol_path = context.user_data.get("complete_protocol_path")
-    protocol_name = context.user_data.get("complete_protocol_name")
     
     # Функция отправки сообщения
     async def send_message(text: str):
@@ -328,53 +299,43 @@ async def _finalize_completion(
             await update.message.reply_text(text, parse_mode="Markdown")
     
     try:
-        # 1. Загружаем договор в Google Drive
-        logger.info(f"Загружаем договор в папку {folder_id}")
-        contract_file_id = await asyncio.to_thread(
-            upload_file_to_drive, contract_path, folder_id, contract_name
-        )
+        uploaded_links = []
+        email_attachments = []
         
-        if not contract_file_id:
-            await send_message("❌ Ошибка загрузки договора в Google Drive.")
-            return await _cleanup_and_end(update, context, from_callback)
-        
-        contract_link = get_file_link(contract_file_id)
-        logger.info(f"Договор загружен: {contract_link}")
-        
-        # 2. Загружаем протокол (если есть)
-        protocol_link = ""
-        if protocol_path and protocol_path.exists():
-            logger.info(f"Загружаем протокол в папку {folder_id}")
-            protocol_file_id = await asyncio.to_thread(
-                upload_file_to_drive, protocol_path, folder_id, protocol_name
+        # 1. Загружаем все файлы в Google Drive
+        for file_info in files:
+            file_name = file_info["name"]
+            file_path = file_info["path"]
+            
+            logger.info(f"Загружаем файл {file_name} в папку {folder_id}")
+            file_id = await asyncio.to_thread(
+                upload_file_to_drive, file_path, folder_id, file_name
             )
             
-            if protocol_file_id:
-                protocol_link = get_file_link(protocol_file_id)
-                logger.info(f"Протокол загружен: {protocol_link}")
+            if file_id:
+                link = get_file_link(file_id)
+                uploaded_links.append(f"{file_name}: {link}")
+                email_attachments.append((file_name, file_path))
+                logger.info(f"Файл загружен: {link}")
+            else:
+                logger.warning(f"Не удалось загрузить файл: {file_name}")
         
-        # 3. Формируем вложения для письма
-        attachments = [(contract_name, contract_path)]
-        if protocol_path and protocol_path.exists():
-            attachments.append((protocol_name, protocol_path))
+        if not uploaded_links:
+            await send_message("❌ Не удалось загрузить файлы в Google Drive.")
+            return await _cleanup_and_end(update, context, from_callback)
         
-        # 4. Отправляем email бухгалтеру
+        # 2. Отправляем email бухгалтеру
         email_message = create_email_contract_completed(
             supplier_name=supplier_name,
             supplier_inn=supplier_inn,
-            attachments=attachments,
+            attachments=email_attachments,
         )
         
         email_sent = await send_email(email_message)
         email_status = "✅" if email_sent else "❌"
         
-        # 5. Обновляем колонку T в Google Sheets
-        contract_info_parts = [f"Договор: {contract_link}"]
-        if protocol_link:
-            contract_info_parts.append(f"Протокол: {protocol_link}")
-        contract_info_parts.append(datetime.now().strftime("%d.%m.%Y"))
-        
-        contract_info = " | ".join(contract_info_parts)
+        # 3. Обновляем колонку T в Google Sheets
+        contract_info = " | ".join(uploaded_links) + f" | {datetime.now().strftime('%d.%m.%Y')}"
         
         sheet_updated = await google_sheets_service.update_contract_info(
             sheet_id=sheet_id,
@@ -383,16 +344,15 @@ async def _finalize_completion(
         )
         sheet_status = "✅" if sheet_updated else "❌"
         
-        # 6. Отчёт пользователю
+        # 4. Отчёт пользователю
+        files_report = "\n".join([f"📁 {f['name']}: ✅" for f in files])
         report = (
             f"📋 *Заявка завершена!*\n\n"
             f"*Поставщик:* {supplier_name}\n"
             f"*ИНН:* {supplier_inn}\n\n"
-            f"*Результаты:*\n"
-            f"📁 Договор загружен в Drive: ✅\n"
-            f"📁 Протокол загружен: {'✅' if protocol_link else 'Пропущен'}\n"
+            f"*Загруженные файлы:*\n{files_report}\n\n"
             f"📧 Email бухгалтеру: {email_status}\n"
-            f"📊 Таблица обновлена: {sheet_status}\n"
+            f"📊 Таблица обновлена: {sheet_status}"
         )
         
         await send_message(report)
@@ -411,8 +371,9 @@ async def _cleanup_and_end(
 ) -> int:
     """Очистка контекста и завершение."""
     # Удаляем временные файлы
-    for key in ["complete_contract_path", "complete_protocol_path"]:
-        path = context.user_data.get(key)
+    files = context.user_data.get("complete_files", [])
+    for file_info in files:
+        path = file_info.get("path")
         if path and isinstance(path, Path) and path.exists():
             try:
                 path.unlink()
@@ -425,10 +386,7 @@ async def _cleanup_and_end(
         "complete_company_info",
         "complete_supplier_info", 
         "incomplete_suppliers",
-        "complete_contract_path",
-        "complete_contract_name",
-        "complete_protocol_path",
-        "complete_protocol_name",
+        "complete_files",
     ]
     for key in keys_to_remove:
         context.user_data.pop(key, None)
@@ -478,22 +436,12 @@ def get_supplier_complete_handler() -> ConversationHandler:
                 CallbackQueryHandler(supplier_selected, pattern=r"^sc_select:\d+$"),
                 CallbackQueryHandler(cancel_handler, pattern=r"^sc_cancel$"),
             ],
-            SC_CONTRACT: [
+            SC_DOCUMENTS: [
                 MessageHandler(
                     filters.Document.ALL & ~filters.COMMAND,
-                    contract_uploaded,
+                    document_uploaded,
                 ),
-                MessageHandler(
-                    filters.Regex("^❌ Отмена$"),
-                    cancel_handler,
-                ),
-            ],
-            SC_PROTOCOL: [
-                MessageHandler(
-                    filters.Document.ALL & ~filters.COMMAND,
-                    protocol_uploaded,
-                ),
-                CallbackQueryHandler(skip_protocol, pattern=r"^sc_skip_protocol$"),
+                CallbackQueryHandler(finish_upload, pattern=r"^sc_finish$"),
                 CallbackQueryHandler(cancel_handler, pattern=r"^sc_cancel$"),
                 MessageHandler(
                     filters.Regex("^❌ Отмена$"),
