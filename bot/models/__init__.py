@@ -1,6 +1,11 @@
 """Модели данных."""
 from bot.models.base import Base, get_async_session, init_db
 from bot.models.company import Company, CompanySettings
+from bot.models.integrations import CompanyIntegrations
+from bot.models.join_request import JoinRequest, JoinRequestStatus
+from bot.models.notification_settings import NotificationPosition
+from bot.models.position import Position
+from bot.models.telegram_group import TelegramGroup
 from bot.models.user import User, UserRole
 from bot.models.supplier import Supplier
 from bot.models.product import Product, ProductDraft
@@ -11,7 +16,13 @@ __all__ = [
     "init_db",
     "get_async_session",
     "Company",
+    "CompanyIntegrations",
     "CompanySettings",
+    "JoinRequest",
+    "JoinRequestStatus",
+    "NotificationPosition",
+    "Position",
+    "TelegramGroup",
     "User",
     "UserRole",
     "Supplier",

@@ -1,5 +1,7 @@
 """Модели продукта и черновика."""
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
@@ -46,5 +48,11 @@ class ProductDraft(Base):
     # JSON с данными черновика
     data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

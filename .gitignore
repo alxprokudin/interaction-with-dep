@@ -26,3 +26,10 @@ data/
 
 # Логи
 *.log
+.DS_Store
+files/
+*.pyc
+__pycache__/
+.env
+*.tmp
+*_optimized.pdf

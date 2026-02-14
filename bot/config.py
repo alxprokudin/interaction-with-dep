@@ -32,3 +32,18 @@ DATABASE_URL = get_env("DATABASE_URL", f"sqlite+aiosqlite:///{DATA_DIR}/bot.db")
 # Google Drive
 GOOGLE_DRIVE_CREDENTIALS_FILE = get_env("GOOGLE_DRIVE_CREDENTIALS_FILE")
 GOOGLE_DRIVE_FOLDER_ID = get_env("GOOGLE_DRIVE_FOLDER_ID")
+
+
+def get_superadmin_ids() -> list[int]:
+    """Получить список ID суперадминов."""
+    ids_str = get_env("SUPERADMIN_IDS", "")
+    if not ids_str:
+        return []
+    try:
+        return [int(id_.strip()) for id_ in ids_str.split(",") if id_.strip()]
+    except ValueError:
+        logger.error(f"Неверный формат SUPERADMIN_IDS: {ids_str}")
+        return []
+
+
+SUPERADMIN_IDS = get_superadmin_ids()

@@ -100,11 +100,14 @@ async def save_product_with_files(
 
         supplier_id = draft.get("supplier_id")
         if not supplier_id:
+            # Создаём поставщика в текущей сессии (без вложенных транзакций)
             from bot.models.supplier import Supplier
-            from bot.services.database import add_supplier
 
-            supplier = await add_supplier(company_id, supplier_name)
+            supplier = Supplier(company_id=company_id, name=supplier_name)
+            session.add(supplier)
+            await session.flush()
             supplier_id = supplier.id
+            logger.debug(f"Создан новый поставщик: id={supplier_id}, name={supplier_name}")
 
         product = Product(
             company_id=company_id,
