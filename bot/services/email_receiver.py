@@ -63,6 +63,7 @@ class IncomingEmail:
     body_text: str                     # Текст письма
     body_html: str                     # HTML версия
     attachments: List[EmailAttachment] = field(default_factory=list)
+    matched_message_id: Optional[str] = None  # Message-ID нашего письма (заполняется при сопоставлении)
     
     def cleanup_attachments(self):
         """Удалить временные файлы вложений."""
@@ -288,10 +289,12 @@ class EmailReceiver:
         Получить только непрочитанные ответы на наши письма.
         
         Фильтрует по Message-ID из нашей БД sent_emails.
+        Также ищет по теме письма + ИНН для систем, не использующих In-Reply-To.
         
         Returns:
             Список писем, которые являются ответами на наши отправленные.
         """
+        import re
         from sqlalchemy import select
         from bot.models.base import async_session_factory
         from bot.models.sent_email import SentEmail
@@ -302,27 +305,76 @@ class EmailReceiver:
         if not all_replies:
             return []
         
-        # Получаем наши Message-ID из БД
+        # Получаем данные наших отправленных писем из БД
         async with async_session_factory() as session:
             result = await session.execute(
-                select(SentEmail.message_id).where(SentEmail.reply_received == False)
+                select(SentEmail).where(SentEmail.reply_received == False)
             )
-            our_message_ids = set(row[0] for row in result.fetchall())
+            pending_emails = result.scalars().all()
+        
+        # Строим индексы для поиска
+        our_message_ids = {e.message_id for e in pending_emails}
+        # ИНН -> список отправленных писем (для fallback поиска по теме)
+        inn_to_emails: dict[str, list] = {}
+        for email in pending_emails:
+            if email.supplier_inn not in inn_to_emails:
+                inn_to_emails[email.supplier_inn] = []
+            inn_to_emails[email.supplier_inn].append(email)
         
         # Фильтруем только ответы на наши письма
         matched_replies: List[IncomingEmail] = []
+        matched_message_ids: set[str] = set()  # Для избежания дублей
         
         for reply in all_replies:
-            # Проверяем In-Reply-To
-            if reply.in_reply_to and reply.in_reply_to in our_message_ids:
-                matched_replies.append(reply)
-                continue
+            matched_email = None
             
-            # Проверяем References
-            for ref in reply.references:
-                if ref in our_message_ids:
-                    matched_replies.append(reply)
-                    break
+            # 1. Проверяем In-Reply-To
+            if reply.in_reply_to and reply.in_reply_to in our_message_ids:
+                matched_email = reply.in_reply_to
+            
+            # 2. Проверяем References
+            if not matched_email:
+                for ref in reply.references:
+                    if ref in our_message_ids:
+                        matched_email = ref
+                        break
+            
+            # 3. Fallback: поиск по теме + ИНН (для систем без In-Reply-To)
+            if not matched_email and reply.subject:
+                subject_lower = reply.subject.lower()
+                # Ищем ИНН в теме письма
+                for inn, emails in inn_to_emails.items():
+                    if inn in reply.subject:
+                        # Определяем тип письма по ключевым словам в теме
+                        for email in emails:
+                            if email.message_id in matched_message_ids:
+                                continue
+                            
+                            # Сопоставляем тип письма с темой
+                            if email.email_type.value == "roaming" and "роуминг" in subject_lower:
+                                matched_email = email.message_id
+                                logger.debug(f"Fallback match: roaming для ИНН {inn}")
+                                break
+                            elif email.email_type.value == "sb_check" and "проверк" in subject_lower and "сб" in subject_lower:
+                                matched_email = email.message_id
+                                logger.debug(f"Fallback match: sb_check для ИНН {inn}")
+                                break
+                            elif email.email_type.value == "docsinbox" and ("настройка" in subject_lower or "docsinbox" in subject_lower):
+                                matched_email = email.message_id
+                                logger.debug(f"Fallback match: docsinbox для ИНН {inn}")
+                                break
+                            elif email.email_type.value == "documents" and "документ" in subject_lower:
+                                matched_email = email.message_id
+                                logger.debug(f"Fallback match: documents для ИНН {inn}")
+                                break
+                        if matched_email:
+                            break
+            
+            if matched_email and matched_email not in matched_message_ids:
+                # Добавляем matched_message_id к reply для дальнейшей обработки
+                reply.matched_message_id = matched_email
+                matched_replies.append(reply)
+                matched_message_ids.add(matched_email)
         
         logger.info(f"Из {len(all_replies)} ответов {len(matched_replies)} относятся к нашим письмам")
         return matched_replies

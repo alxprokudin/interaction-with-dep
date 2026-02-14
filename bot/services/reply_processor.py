@@ -106,7 +106,8 @@ async def process_email_replies(bot: Bot) -> int:
     for reply in replies:
         try:
             # Определяем, на какое наше письмо это ответ
-            original_message_id = reply.in_reply_to
+            # Приоритет: matched_message_id (заполняется при fallback-поиске) > in_reply_to > references
+            original_message_id = getattr(reply, 'matched_message_id', None) or reply.in_reply_to
             
             # Если In-Reply-To пустой, ищем в References
             if not original_message_id and reply.references:
