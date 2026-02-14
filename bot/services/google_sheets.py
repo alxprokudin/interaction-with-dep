@@ -487,6 +487,106 @@ class GoogleSheetsService:
         except Exception as e:
             logger.error(f"Ошибка обновления по коду: {e}", exc_info=True)
             return False
+    
+    async def get_incomplete_suppliers(
+        self,
+        sheet_id: str,
+        worksheet_name: str = "Реестр_Поставщики",
+    ) -> list[dict[str, Any]]:
+        """
+        Получить список поставщиков с незавершёнными заявками.
+        
+        Незавершённая заявка = колонка T (Договор/Протокол) пустая,
+        но колонка K (ссылка на папку) заполнена.
+        
+        Args:
+            sheet_id: ID таблицы
+            worksheet_name: Название листа
+            
+        Returns:
+            Список словарей с данными поставщиков
+        """
+        logger.info(f"get_incomplete_suppliers: sheet_id={sheet_id[:20]}...")
+        
+        rows = await self.get_all_rows(sheet_id, worksheet_name, skip_header=True)
+        if not rows:
+            return []
+        
+        # Индексы колонок (0-based)
+        # K = 10 (ссылка на папку), S = 18 (код заявки), T = 19 (договор/протокол)
+        FOLDER_LINK_COL = 10  # K
+        TRACKING_CODE_COL = 18  # S
+        CONTRACT_COL = 19  # T
+        
+        incomplete = []
+        
+        for row_idx, row in enumerate(rows):
+            # Проверяем: есть ссылка на папку (K) и пустая колонка T
+            folder_link = row[FOLDER_LINK_COL] if len(row) > FOLDER_LINK_COL else ""
+            contract_info = row[CONTRACT_COL] if len(row) > CONTRACT_COL else ""
+            
+            # Если папка есть, но договор не заполнен — незавершённая заявка
+            if folder_link and folder_link.strip() and not (contract_info and contract_info.strip()):
+                supplier = {
+                    "row_number": row_idx + 2,  # +1 для 1-based, +1 для заголовка
+                    "date_added": row[0] if len(row) > 0 else "",
+                    "inn": row[1] if len(row) > 1 else "",
+                    "kpp": row[2] if len(row) > 2 else "",
+                    "name": row[3] if len(row) > 3 else "",
+                    "email": row[4] if len(row) > 4 else "",
+                    "phone": row[5] if len(row) > 5 else "",
+                    "contact_name": row[6] if len(row) > 6 else "",
+                    "folder_link": folder_link,
+                    "tracking_code": row[TRACKING_CODE_COL] if len(row) > TRACKING_CODE_COL else "",
+                }
+                incomplete.append(supplier)
+        
+        logger.info(f"Найдено незавершённых заявок: {len(incomplete)}")
+        return incomplete
+    
+    async def update_contract_info(
+        self,
+        sheet_id: str,
+        row_number: int,
+        contract_info: str,
+        worksheet_name: str = "Реестр_Поставщики",
+    ) -> bool:
+        """
+        Обновить информацию о договоре/протоколе в колонке T.
+        
+        Args:
+            sheet_id: ID таблицы
+            row_number: Номер строки (1-based)
+            contract_info: Информация для записи (ссылки, дата)
+            worksheet_name: Название листа
+            
+        Returns:
+            Успешность операции
+        """
+        import asyncio
+        
+        logger.info(f"update_contract_info: row={row_number}, info={contract_info[:50]}...")
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return False
+        
+        try:
+            def _update():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                # Обновляем колонку T (20-я колонка)
+                cell_address = f"T{row_number}"
+                worksheet.update_acell(cell_address, contract_info)
+                logger.info(f"Обновлена ячейка {cell_address}")
+                return True
+            
+            return await asyncio.to_thread(_update)
+        except Exception as e:
+            logger.error(f"Ошибка обновления договора: {e}", exc_info=True)
+            return False
 
 
 # Singleton instance

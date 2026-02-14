@@ -568,6 +568,44 @@ def create_email_4_documents(
     )
 
 
+def create_email_contract_completed(
+    supplier_name: str,
+    supplier_inn: str,
+    attachments: Optional[List[Path]] = None,
+) -> EmailMessage:
+    """
+    Письмо бухгалтеру о заключении договора с поставщиком.
+    
+    To: Ol.Pak@x5.ru
+    Cc: opak@mnogolososya.ru
+    """
+    body = f"""Добрый день!
+
+Уведомляем о заключении договора поставки с контрагентом:
+
+Наименование: {supplier_name}
+ИНН: {supplier_inn}
+
+Договор и протокол разногласий (при наличии) приложены к письму.
+
+Просим завершить настройки в учётной системе и сообщить о возможности начала закупок.
+
+С уважением,
+{COMPANY_NAME}
+"""
+    
+    logger.info(f"create_email_contract_completed: supplier={supplier_name}, inn={supplier_inn}")
+    
+    # TODO: Заменить на рабочие email: to=["Ol.Pak@x5.ru"], cc=["opak@mnogolososya.ru"]
+    return EmailMessage(
+        to=["alxprokudin@gmail.com"],
+        cc=[],
+        subject=f"Заключён договор с поставщиком - {supplier_name} {supplier_inn}",
+        body=body,
+        attachments=attachments or [],
+    )
+
+
 def _create_documents_archive(files_list: List[tuple], archive_name: str = "Документы_для_договора.zip") -> Optional[Path]:
     """
     Создать zip-архив из списка файлов.

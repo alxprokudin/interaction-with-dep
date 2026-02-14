@@ -10,6 +10,7 @@ from bot.handlers.group_events import get_group_events_handler
 from bot.handlers.product_registration import get_product_registration_handler
 from bot.handlers.registration import get_registration_handler
 from bot.handlers.supplier_add import get_supplier_add_handler
+from bot.handlers.supplier_complete import get_supplier_complete_handler
 from bot.handlers.settings import get_settings_handlers
 from bot.handlers.start import cmd_start, main_menu
 from bot.handlers.superadmin import get_superadmin_handler
@@ -97,6 +98,7 @@ def main() -> None:
     application.add_handler(get_registration_handler())
     application.add_handler(get_product_registration_handler())
     application.add_handler(get_supplier_add_handler())  # Добавление поставщика без привязки к заявке
+    application.add_handler(get_supplier_complete_handler())  # Завершение заявки поставщика
     # application.add_handler(get_supplier_search_handler())  # Поиск поставщиков — временно отключен
 
     # 3. Callback-хэндлеры для админов (одобрение/отклонение заявок)
