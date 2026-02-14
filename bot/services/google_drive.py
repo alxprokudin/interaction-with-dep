@@ -246,10 +246,12 @@ def list_files_recursive(folder_id: str) -> list[dict]:
     return all_files
 
 
-def download_file_from_drive(file_id: str, filename: str) -> Optional[Path]:
+def download_file_from_drive(file_id: str, filename: str) -> Optional[tuple[str, Path]]:
     """
     Скачать файл из Google Drive во временный файл.
-    Возвращает Path к скачанному файлу или None.
+    
+    Returns:
+        Кортеж (original_filename, temp_path) или None при ошибке.
     """
     import tempfile
     
@@ -280,7 +282,7 @@ def download_file_from_drive(file_id: str, filename: str) -> Optional[Path]:
                 status, done = downloader.next_chunk()
         
         logger.debug(f"Файл скачан: {tmp_path}, size={tmp_path.stat().st_size}")
-        return tmp_path
+        return (filename, tmp_path)
         
     except Exception as e:
         logger.error(f"Ошибка скачивания файла: {e}", exc_info=True)

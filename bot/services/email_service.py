@@ -63,12 +63,17 @@ class SupplierData:
 
 @dataclass
 class EmailMessage:
-    """Структура email сообщения."""
+    """Структура email сообщения.
+    
+    attachments может быть:
+    - List[Path] — имя файла берётся из path.name
+    - List[tuple[str, Path]] — первый элемент используется как имя файла
+    """
     to: List[str]
     cc: List[str]
     subject: str
     body: str
-    attachments: List[Path] = None
+    attachments: list = None
     
     def __post_init__(self):
         if self.attachments is None:
@@ -105,7 +110,14 @@ def _create_mime_message(
     
     # Вложения
     if attachments:
-        for file_path in attachments:
+        for item in attachments:
+            # Поддержка двух форматов: Path или (name, Path)
+            if isinstance(item, tuple):
+                display_name, file_path = item
+            else:
+                file_path = item
+                display_name = file_path.name
+            
             if file_path.exists():
                 with open(file_path, "rb") as f:
                     part = MIMEBase("application", "octet-stream")
@@ -113,7 +125,7 @@ def _create_mime_message(
                 encoders.encode_base64(part)
                 part.add_header(
                     "Content-Disposition",
-                    f"attachment; filename={file_path.name}",
+                    f"attachment; filename=\"{display_name}\"",
                 )
                 message.attach(part)
     
@@ -450,14 +462,16 @@ async def send_supplier_registration_emails(
                         continue
                     
                     logger.debug(f"Скачиваем: {filename}")
-                    file_path = await asyncio.to_thread(download_file_from_drive, file_id, filename)
+                    result = await asyncio.to_thread(download_file_from_drive, file_id, filename)
                     
-                    if file_path and file_path.exists():
-                        downloaded_files.append(file_path)
-                        logger.debug(f"Скачан: {filename}, размер: {file_path.stat().st_size / 1024:.1f} KB")
+                    if result:
+                        original_name, file_path = result
+                        if file_path.exists():
+                            downloaded_files.append((original_name, file_path))
+                            logger.debug(f"Скачан: {original_name}, размер: {file_path.stat().st_size / 1024:.1f} KB")
                 
                 if downloaded_files:
-                    total_size = sum(f.stat().st_size for f in downloaded_files) / 1024 / 1024
+                    total_size = sum(f[1].stat().st_size for f in downloaded_files) / 1024 / 1024
                     logger.info(f"Всего скачано {len(downloaded_files)} файлов, общий размер: {total_size:.2f} MB")
                     email_4 = create_email_4_documents(supplier, downloaded_files)
                     results["email_4_documents"] = await send_email(email_4)
@@ -476,8 +490,9 @@ async def send_supplier_registration_emails(
         
     finally:
         # Удаляем временные файлы
-        for file_path in downloaded_files:
+        for item in downloaded_files:
             try:
+                _, file_path = item if isinstance(item, tuple) else (None, item)
                 if file_path.exists():
                     file_path.unlink()
                     logger.debug(f"Временный файл удалён: {file_path.name}")
