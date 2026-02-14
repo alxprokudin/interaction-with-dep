@@ -359,6 +359,8 @@ class EmailReceiver:
                         continue
                     
                     # Сопоставляем тип письма с темой
+                    # ВАЖНО: порядок проверки имеет значение! 
+                    # roaming должен проверяться ДО docsinbox, т.к. "Настройка роуминга" содержит "настройк"
                     email_type = email_obj.email_type.value
                     if email_type == "roaming" and "роуминг" in subject_lower:
                         matched_email = email_obj.message_id
@@ -370,7 +372,11 @@ class EmailReceiver:
                         matched_code = tracking_code
                         logger.debug(f"Match by code: sb_check, code={tracking_code}")
                         break
-                    elif email_type == "docsinbox" and ("docsinbox" in subject_lower or "настройк" in subject_lower):
+                    elif email_type == "docsinbox" and (
+                        "docsinbox" in subject_lower or 
+                        ("настройк" in subject_lower and "роуминг" not in subject_lower)
+                    ):
+                        # "настройк" только если НЕТ "роуминг" в теме
                         matched_email = email_obj.message_id
                         matched_code = tracking_code
                         logger.debug(f"Match by code: docsinbox, code={tracking_code}")
