@@ -266,10 +266,21 @@ class EmailReceiver:
                         raw_email = data[0][1]
                         parsed = _parse_email_message(raw_email, uid.decode())
                         
-                        if parsed and parsed.in_reply_to:
-                            # Это ответ на какое-то письмо
+                        if not parsed:
+                            continue
+                        
+                        # Добавляем письмо если:
+                        # 1. Есть In-Reply-To header
+                        # 2. ИЛИ тема начинается с Re:/RE: (для систем без In-Reply-To)
+                        is_reply = bool(parsed.in_reply_to)
+                        is_re_subject = parsed.subject and parsed.subject.upper().startswith(("RE:", "RE :", "FW:", "FWD:"))
+                        
+                        if is_reply or is_re_subject:
                             emails.append(parsed)
-                            logger.debug(f"Найден ответ: {parsed.subject} (in_reply_to={parsed.in_reply_to})")
+                            if is_reply:
+                                logger.debug(f"Найден ответ: {parsed.subject} (in_reply_to={parsed.in_reply_to})")
+                            else:
+                                logger.debug(f"Найден ответ (по теме): {parsed.subject}")
                     
                     except Exception as e:
                         logger.warning(f"Ошибка обработки письма {uid}: {e}")
