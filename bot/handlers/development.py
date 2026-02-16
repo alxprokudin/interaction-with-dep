@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 from bot.services.google_sheets import google_sheets_service
-from bot.services.google_drive import upload_file_to_drive, get_file_link
+from bot.services.google_drive import get_spreadsheet_link
 from bot.services.iiko_service import iiko_service, search_products
 from bot.services.act_generator import generate_act_for_request
 from bot.services.database import get_user_company_info
@@ -360,16 +360,7 @@ async def confirm_create_act(update: Update, context: ContextTypes.DEFAULT_TYPE)
     company_info = context.user_data.get("company_info", {})
     
     try:
-        # 1. Генерируем акт из шаблона
-        act_path = generate_act_for_request(
-            request_id=selected_request.get("request_id", "REQ-?????"),
-            product_name=selected_request.get("nomenclature", ""),
-            supplier_name=selected_request.get("supplier_name", ""),
-            iiko_product_name=selected_product.get("name", ""),
-        )
-        logger.info(f"Акт сгенерирован: {act_path}")
-        
-        # 2. Извлекаем folder_id из ссылки на папку заявки
+        # 1. Извлекаем folder_id из ссылки на папку заявки
         folder_link = selected_request.get("folder_link", "")
         folder_id = _extract_folder_id(folder_link)
         
@@ -380,24 +371,25 @@ async def confirm_create_act(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return ConversationHandler.END
         
-        # 3. Загружаем акт на Drive
+        # 2. Генерируем акт (копирование шаблона Google Sheets + заполнение)
         import asyncio
         
-        file_id = await asyncio.to_thread(
-            upload_file_to_drive,
-            act_path,
+        act_file_id = await asyncio.to_thread(
+            generate_act_for_request,
+            selected_request.get("request_id", "REQ-?????"),
+            selected_request.get("nomenclature", ""),
+            selected_request.get("supplier_name", ""),
+            selected_product.get("name", ""),
             folder_id,
-            act_path.name,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         
-        if not file_id:
-            logger.error("Не удалось загрузить акт на Drive")
-            await query.edit_message_text("❌ Ошибка загрузки акта на Google Drive.")
+        if not act_file_id:
+            logger.error("Не удалось создать акт")
+            await query.edit_message_text("❌ Ошибка создания акта проработки.")
             return ConversationHandler.END
         
-        act_link = get_file_link(file_id)
-        logger.info(f"Акт загружен: {act_link}")
+        act_link = get_spreadsheet_link(act_file_id)
+        logger.info(f"Акт создан: {act_link}")
         
         # 4. Обновляем реестр
         responsible = f"@{user.username}" if user.username else str(user.id)

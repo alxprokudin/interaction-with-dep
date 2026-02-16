@@ -289,6 +289,51 @@ def download_file_from_drive(file_id: str, filename: str) -> Optional[tuple[str,
         return None
 
 
+def copy_file_to_folder(
+    source_file_id: str,
+    target_folder_id: str,
+    new_name: str,
+) -> Optional[str]:
+    """
+    Копировать файл в указанную папку Google Drive.
+    
+    Args:
+        source_file_id: ID исходного файла
+        target_folder_id: ID целевой папки
+        new_name: Имя копии
+        
+    Returns:
+        ID новой копии или None при ошибке
+    """
+    logger.info(f"copy_file_to_folder: source={source_file_id}, target={target_folder_id}, name={new_name}")
+    service = _get_drive_service()
+    if not service:
+        return None
+    
+    try:
+        file_metadata = {
+            "name": new_name,
+            "parents": [target_folder_id],
+        }
+        
+        copied_file = service.files().copy(
+            fileId=source_file_id,
+            body=file_metadata,
+            supportsAllDrives=True,
+        ).execute()
+        
+        logger.debug(f"Файл скопирован: id={copied_file['id']}")
+        return copied_file["id"]
+    except Exception as e:
+        logger.error(f"Ошибка копирования файла: {e}", exc_info=True)
+        return None
+
+
+def get_spreadsheet_link(file_id: str) -> str:
+    """Получить ссылку на Google Sheets документ."""
+    return f"https://docs.google.com/spreadsheets/d/{file_id}/edit"
+
+
 def download_all_files_from_folder(folder_id: str, recursive: bool = True) -> list[tuple[str, Path]]:
     """
     Скачать все файлы из папки Google Drive.

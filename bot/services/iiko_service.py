@@ -497,15 +497,18 @@ async def search_products(query: str, limit: int = 10) -> list[dict]:
     """
     from bot.models.iiko_product import IikoProductCache
     from bot.models.base import async_session_factory
-    from sqlalchemy import select
+    from sqlalchemy import select, func
     
     logger.debug(f"search_products: query={query}, limit={limit}")
     
+    # Нормализуем запрос для регистронезависимого поиска
+    query_lower = query.lower().strip()
+    
     async with async_session_factory() as session:
-        # Поиск по части названия (case-insensitive)
+        # Поиск по части названия (case-insensitive для кириллицы в SQLite)
         stmt = (
             select(IikoProductCache)
-            .where(IikoProductCache.name.ilike(f"%{query}%"))
+            .where(func.lower(IikoProductCache.name).contains(query_lower))
             .limit(limit)
         )
         result = await session.execute(stmt)
