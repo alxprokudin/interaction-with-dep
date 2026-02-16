@@ -192,11 +192,9 @@ async def code_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             # Создаём пользователя в компании
             new_user = User(
                 telegram_id=user.id,
-                telegram_username=user.username,
                 full_name=user.full_name,
                 company_id=company.id,
                 role=UserRole.ADMIN,  # Суперадмин получает роль админа
-                is_active=True,
             )
             session.add(new_user)
             await session.commit()
