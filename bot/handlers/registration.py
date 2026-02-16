@@ -13,6 +13,7 @@ from telegram.ext import (
 
 from sqlalchemy import select
 
+from bot.config import SUPERADMIN_IDS
 from bot.models import Company, JoinRequest, JoinRequestStatus, User, UserRole
 from bot.models.base import async_session_factory
 
@@ -174,6 +175,37 @@ async def code_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(
             f"⏳ У вас уже есть заявка в компанию «{company.name}».\n\n"
             "Ожидайте подтверждения от администратора."
+        )
+        return ConversationHandler.END
+
+    # Автоодобрение для суперадминов
+    if user.id in SUPERADMIN_IDS:
+        logger.info(f"Автоодобрение заявки для суперадмина: user_id={user.id}")
+        async with async_session_factory() as session:
+            # Обновляем статус заявки
+            result = await session.execute(
+                select(JoinRequest).where(JoinRequest.id == join_request.id)
+            )
+            jr = result.scalar_one()
+            jr.status = JoinRequestStatus.APPROVED
+            
+            # Создаём пользователя в компании
+            new_user = User(
+                telegram_id=user.id,
+                telegram_username=user.username,
+                full_name=user.full_name,
+                company_id=company.id,
+                role=UserRole.ADMIN,  # Суперадмин получает роль админа
+                is_active=True,
+            )
+            session.add(new_user)
+            await session.commit()
+        
+        from bot.keyboards.main import get_main_menu_keyboard
+        await update.message.reply_text(
+            f"✅ Вы добавлены в компанию «{company.name}» как администратор!\n\n"
+            "Используйте меню для работы.",
+            reply_markup=get_main_menu_keyboard(is_superadmin=True),
         )
         return ConversationHandler.END
 
