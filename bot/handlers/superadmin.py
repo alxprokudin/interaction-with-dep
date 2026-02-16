@@ -1503,4 +1503,5 @@ def get_superadmin_handler() -> ConversationHandler:
         ],
         name="superadmin_conversation",
         persistent=False,
+        allow_reentry=True,
     )
