@@ -5,7 +5,7 @@ from loguru import logger
 
 from bot.config import BOT_TOKEN, get_env
 from bot.handlers.admin import get_admin_handlers
-from bot.handlers.development import show_development_menu
+from bot.handlers.development import get_development_handler
 from bot.handlers.group_events import get_group_events_handler
 from bot.handlers.product_registration import get_product_registration_handler
 from bot.handlers.registration import get_registration_handler
@@ -20,6 +20,9 @@ from bot.models.base import init_db
 
 # Интервал проверки ответов на письма (в минутах)
 EMAIL_CHECK_INTERVAL = int(get_env("EMAIL_CHECK_INTERVAL", "5"))
+
+# Интервал синхронизации кеша iiko (в часах)
+IIKO_SYNC_INTERVAL_HOURS = int(get_env("IIKO_SYNC_INTERVAL_HOURS", "24"))
 
 
 def setup_logging() -> None:
@@ -37,13 +40,69 @@ async def post_init(application) -> None:
     logger.info("Инициализация базы данных")
     await init_db()
     
-    # Запускаем периодическую проверку ответов на письма
-    await setup_email_reply_checker(application)
+    # Запускаем фоновые задачи
+    await setup_background_jobs(application)
 
 
-async def setup_email_reply_checker(application) -> None:
-    """Настроить периодическую проверку ответов на письма."""
+async def setup_background_jobs(application) -> None:
+    """Настроить все фоновые задачи."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    
+    scheduler = AsyncIOScheduler()
+    
+    # Синхронизация кеша iiko
+    await setup_iiko_sync(scheduler)
+    
+    # Проверка ответов на письма
+    await setup_email_reply_checker(application, scheduler)
+    
+    scheduler.start()
+    logger.info("Фоновые задачи запущены")
+
+
+async def setup_iiko_sync(scheduler) -> None:
+    """Настроить периодическую синхронизацию кеша продуктов iiko."""
+    from bot.services.iiko_service import sync_products_to_db
+    
+    # Проверяем, настроен ли iiko
+    iiko_password = get_env("IIKO_PASSWORD", "")
+    
+    if not iiko_password:
+        logger.warning("IIKO_PASSWORD не настроен — синхронизация кеша отключена")
+        return
+    
+    async def sync_iiko_job():
+        """Задача синхронизации кеша iiko."""
+        try:
+            count = await sync_products_to_db()
+            logger.info(f"Синхронизация iiko завершена: {count} продуктов")
+        except Exception as e:
+            logger.error(f"Ошибка синхронизации iiko: {e}", exc_info=True)
+    
+    # Добавляем задачу синхронизации
+    scheduler.add_job(
+        sync_iiko_job,
+        "interval",
+        hours=IIKO_SYNC_INTERVAL_HOURS,
+        id="sync_iiko_products",
+        name="Синхронизация кеша продуктов iiko",
+        replace_existing=True,
+    )
+    
+    # Запускаем сразу при старте
+    scheduler.add_job(
+        sync_iiko_job,
+        "date",  # Одноразовый запуск
+        id="sync_iiko_products_initial",
+        name="Начальная синхронизация кеша iiko",
+        replace_existing=True,
+    )
+    
+    logger.info(f"Синхронизация кеша iiko настроена: каждые {IIKO_SYNC_INTERVAL_HOURS} часов")
+
+
+async def setup_email_reply_checker(application, scheduler) -> None:
+    """Настроить периодическую проверку ответов на письма."""
     from bot.services.reply_processor import check_email_replies_job
     
     # Проверяем, настроен ли IMAP
@@ -53,8 +112,6 @@ async def setup_email_reply_checker(application) -> None:
     if not imap_user or not imap_password:
         logger.warning("IMAP не настроен — проверка ответов на письма отключена")
         return
-    
-    scheduler = AsyncIOScheduler()
     
     # Добавляем задачу проверки ответов
     scheduler.add_job(
@@ -67,8 +124,7 @@ async def setup_email_reply_checker(application) -> None:
         replace_existing=True,
     )
     
-    scheduler.start()
-    logger.info(f"Запущена проверка ответов на письма каждые {EMAIL_CHECK_INTERVAL} минут")
+    logger.info(f"Проверка ответов на письма настроена: каждые {EMAIL_CHECK_INTERVAL} минут")
 
 
 def main() -> None:
@@ -109,13 +165,8 @@ def main() -> None:
     for handler in get_settings_handlers():
         application.add_handler(handler)
 
-    # 5. Конкретные кнопки меню
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^🔄 Процесс проработки$"),
-            show_development_menu,
-        )
-    )
+    # 5. Процесс проработки (ConversationHandler)
+    application.add_handler(get_development_handler())
 
     # 6. Общий fallback для текста
     application.add_handler(

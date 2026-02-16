@@ -10,6 +10,7 @@ from bot.models.telegram_group import TelegramGroup
 from bot.models.user import User, UserRole
 from bot.models.supplier import Supplier
 from bot.models.product import Product, ProductDraft
+from bot.models.iiko_product import IikoProductCache
 
 # Импорты для регистрации в Base.metadata
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "Supplier",
     "Product",
     "ProductDraft",
+    "IikoProductCache",
 ]

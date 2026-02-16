@@ -588,6 +588,147 @@ class GoogleSheetsService:
             logger.error(f"Ошибка обновления договора: {e}", exc_info=True)
             return False
 
+    # ============ МЕТОДЫ ДЛЯ РЕЕСТР_ПРОРАБОТКИ ============
+
+    async def get_new_development_requests(
+        self,
+        sheet_id: str,
+        worksheet_name: str = "Реестр_Проработки",
+    ) -> list[dict[str, Any]]:
+        """
+        Получить заявки на проработку со статусом "Новая".
+        
+        Args:
+            sheet_id: ID таблицы
+            worksheet_name: Название листа
+            
+        Returns:
+            Список заявок с данными
+        """
+        import asyncio
+        
+        logger.debug(f"get_new_development_requests: sheet_id={sheet_id}")
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return []
+        
+        try:
+            def _get_new():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                # Получаем все строки
+                all_rows = worksheet.get_all_values()
+                if len(all_rows) < 2:
+                    return []
+                
+                headers = all_rows[0]
+                requests = []
+                
+                # Индексы колонок (0-based)
+                # A=0, B=1, ..., Q=16 (Статус)
+                status_col = 16  # Q
+                
+                for row_idx, row in enumerate(all_rows[1:], start=2):
+                    # Проверяем статус "Новая"
+                    status = row[status_col] if len(row) > status_col else ""
+                    
+                    if status.lower() == "новая":
+                        request_data = {
+                            "row_number": row_idx,
+                            "date": row[0] if len(row) > 0 else "",
+                            "request_id": row[1] if len(row) > 1 else "",
+                            "request_type": row[2] if len(row) > 2 else "",
+                            "sla_days": row[3] if len(row) > 3 else "",
+                            "deadline": row[4] if len(row) > 4 else "",
+                            "supplier_name": row[5] if len(row) > 5 else "",
+                            "supplier_inn": row[6] if len(row) > 6 else "",
+                            "nomenclature": row[7] if len(row) > 7 else "",
+                            "unit": row[8] if len(row) > 8 else "",
+                            "price": row[9] if len(row) > 9 else "",
+                            "folder_link": row[10] if len(row) > 10 else "",
+                            "status": status,
+                        }
+                        requests.append(request_data)
+                
+                return requests
+            
+            result = await asyncio.to_thread(_get_new)
+            logger.info(f"Найдено {len(result)} новых заявок на проработку")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения заявок: {e}", exc_info=True)
+            return []
+
+    async def update_development_request_for_work(
+        self,
+        sheet_id: str,
+        row_number: int,
+        responsible: str,
+        iiko_name: str,
+        iiko_price: float,
+        act_link: str,
+        worksheet_name: str = "Реестр_Проработки",
+    ) -> bool:
+        """
+        Обновить заявку при взятии в работу.
+        
+        Обновляет колонки:
+        - P (16): Ответственный
+        - Q (17): Статус → "В работе"
+        - R (18): Наименование iiko
+        - S (19): Цена iiko
+        - T (20): Ссылка на акт
+        
+        Args:
+            sheet_id: ID таблицы
+            row_number: Номер строки (1-based)
+            responsible: Username ответственного
+            iiko_name: Выбранное наименование из iiko
+            iiko_price: Цена из iiko
+            act_link: Ссылка на файл акта
+            worksheet_name: Название листа
+            
+        Returns:
+            Успешность операции
+        """
+        import asyncio
+        
+        logger.info(f"update_development_request_for_work: row={row_number}, responsible={responsible}")
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return False
+        
+        try:
+            def _update():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                # Обновляем колонки P, Q, R, S, T
+                updates = [
+                    (f"P{row_number}", responsible),
+                    (f"Q{row_number}", "В работе"),
+                    (f"R{row_number}", iiko_name),
+                    (f"S{row_number}", str(iiko_price)),
+                    (f"T{row_number}", act_link),
+                ]
+                
+                for cell, value in updates:
+                    worksheet.update_acell(cell, value)
+                    logger.debug(f"Обновлена ячейка {cell} = {value[:30] if len(value) > 30 else value}")
+                
+                return True
+            
+            return await asyncio.to_thread(_update)
+        except Exception as e:
+            logger.error(f"Ошибка обновления заявки: {e}", exc_info=True)
+            return False
+
 
 # Singleton instance
 google_sheets_service = GoogleSheetsService()
