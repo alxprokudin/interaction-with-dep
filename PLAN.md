@@ -58,7 +58,7 @@
 - [x] Отправка email при сценарии "Отправить на заведение".
         Отправлять нужно 4 письма на разные адреса:
         1.  To: Pak, Olga <Ol.Pak@x5.ru>
-            Cc: oz@mnogolososya.ru; pgadyaka@mnogolososya.ru; bkhatchukaev@mnogolososya.ru; karina.petrakova@mnogolososya.ru
+            Cc: oz@mnogolososya.ru; pgadyaka@mnogolososya.ru; bkhatchukaev@mnogolososya.ru; karina.petrakova@mnogolososya.ru, aprokudin@mnogolososya.ru
             Subject: Новый поставщик на проверку СБ - "РОЯЛФИШ" 5015015560
             
             Добрый день! Просим направить нового поставщика на проверку СБ:

@@ -38,10 +38,10 @@ COMPANY_GUID = "2BE76ddf68ec9c14cfdb09f08448dda32c7"
 
 # CC адреса для всех писем
 DEFAULT_CC = [
-    "oz@mnogolososya.ru",
     "pgadyaka@mnogolososya.ru",
     "bkhatchukaev@mnogolososya.ru",
     "karina.petrakova@mnogolososya.ru",
+    "aprokudin@mnogolososya.ru",
 ]
 
 # ID папки с документами для заключения договора (для вложений в письмо)
@@ -596,9 +596,11 @@ def create_email_contract_completed(
     
     logger.info(f"create_email_contract_completed: supplier={supplier_name}, inn={supplier_inn}")
     
+    cc_list = ["opak@mnogolososya.ru"] + DEFAULT_CC.copy()
+    
     return EmailMessage(
         to=["Ol.Pak@x5.ru"],
-        cc=["opak@mnogolososya.ru"],
+        cc=cc_list,
         subject=f"Заключён договор с поставщиком - {supplier_name} {supplier_inn}",
         body=body,
         attachments=attachments or [],
