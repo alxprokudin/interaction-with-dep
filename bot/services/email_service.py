@@ -38,6 +38,7 @@ COMPANY_GUID = "2BE76ddf68ec9c14cfdb09f08448dda32c7"
 
 # CC адреса для всех писем
 DEFAULT_CC = [
+    "oz@mnogolososya.ru",
     "pgadyaka@mnogolososya.ru",
     "bkhatchukaev@mnogolososya.ru",
     "karina.petrakova@mnogolososya.ru",
