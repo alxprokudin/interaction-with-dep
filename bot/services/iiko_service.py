@@ -472,6 +472,7 @@ async def sync_products_to_db() -> int:
                 iiko_id=product.id,
                 num=product.num,
                 name=product.name,
+                name_lower=product.name.lower(),  # Для регистронезависимого поиска
                 product_type=product.product_type,
                 cooking_place_type=product.cooking_place_type,
                 main_unit=product.main_unit,
@@ -497,18 +498,18 @@ async def search_products(query: str, limit: int = 10) -> list[dict]:
     """
     from bot.models.iiko_product import IikoProductCache
     from bot.models.base import async_session_factory
-    from sqlalchemy import select, func
+    from sqlalchemy import select
     
     logger.debug(f"search_products: query={query}, limit={limit}")
     
-    # Нормализуем запрос для регистронезависимого поиска
+    # Нормализуем запрос для регистронезависимого поиска (Python lower() для кириллицы)
     query_lower = query.lower().strip()
     
     async with async_session_factory() as session:
-        # Поиск по части названия (case-insensitive для кириллицы в SQLite)
+        # Поиск по name_lower (предварительно нормализованному полю)
         stmt = (
             select(IikoProductCache)
-            .where(func.lower(IikoProductCache.name).contains(query_lower))
+            .where(IikoProductCache.name_lower.contains(query_lower))
             .limit(limit)
         )
         result = await session.execute(stmt)

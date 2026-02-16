@@ -25,6 +25,9 @@ class IikoProductCache(Base):
     # Название продукта (индексируем для поиска)
     name: Mapped[str] = mapped_column(String(500), index=True)
     
+    # Название в нижнем регистре для регистронезависимого поиска (кириллица!)
+    name_lower: Mapped[str] = mapped_column(String(500), index=True, default="")
+    
     # Тип продукта (GOODS, DISH, etc.)
     product_type: Mapped[str] = mapped_column(String(50), default="")
     
