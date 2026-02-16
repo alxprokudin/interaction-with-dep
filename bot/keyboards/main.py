@@ -18,10 +18,12 @@ def get_main_menu_keyboard(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def get_registration_keyboard() -> ReplyKeyboardMarkup:
+def get_registration_keyboard(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
     """Клавиатура для новых пользователей без компании."""
-    logger.debug("get_registration_keyboard called")
+    logger.debug(f"get_registration_keyboard called, is_superadmin={is_superadmin}")
     keyboard = [
         [KeyboardButton("🔐 Присоединиться к компании")],
     ]
+    if is_superadmin:
+        keyboard.append([KeyboardButton("🔧 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)

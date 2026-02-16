@@ -37,12 +37,24 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not companies:
         # Новый пользователь — нужно присоединиться к компании
         logger.debug("Пользователь не состоит ни в одной компании")
+        is_superadmin = user.id in SUPERADMIN_IDS
+        
+        if is_superadmin:
+            msg = (
+                "👋 Добро пожаловать в **WorkFlow Hub**!\n\n"
+                "Вы суперадмин. Используйте **Админ-панель** для создания компании."
+            )
+        else:
+            msg = (
+                "👋 Добро пожаловать в **WorkFlow Hub**!\n\n"
+                "Для начала работы вам нужно присоединиться к компании.\n"
+                "Попросите код приглашения у администратора вашей компании."
+            )
+        
         await update.message.reply_text(
-            "👋 Добро пожаловать в **WorkFlow Hub**!\n\n"
-            "Для начала работы вам нужно присоединиться к компании.\n"
-            "Попросите код приглашения у администратора вашей компании.",
+            msg,
             parse_mode="Markdown",
-            reply_markup=get_registration_keyboard(),
+            reply_markup=get_registration_keyboard(is_superadmin=is_superadmin),
         )
         return
 
@@ -105,7 +117,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not companies:
             await update.message.reply_text(
                 "Для начала работы присоединитесь к компании.",
-                reply_markup=get_registration_keyboard(),
+                reply_markup=get_registration_keyboard(is_superadmin=is_superadmin),
             )
         else:
             await update.message.reply_text(
