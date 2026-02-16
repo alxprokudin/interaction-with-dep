@@ -657,7 +657,7 @@ class GoogleSheetsService:
                             "price": price,
                             "folder_link": row[10] if len(row) > 10 else "",
                             "certificate_link": row[11] if len(row) > 11 else "",  # L
-                            "ocr_link": row[12] if len(row) > 12 else "",  # M
+                            "ocr_link": row[14] if len(row) > 14 else "",  # O (не M!)
                             "status": status,
                         }
                         requests.append(request_data)

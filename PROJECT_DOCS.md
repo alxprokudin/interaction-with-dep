@@ -65,8 +65,8 @@ scripts/                 # Утилиты (connect_to_iiko.js)
 | Цена поставщика | J | 9 | Цена нового продукта |
 | Ссылка на папку | K | 10 | Google Drive папка заявки |
 | Ссылка на сертификат | L | 11 | Google Drive ссылка |
-| Ссылка на этикетку | M | 12 | Google Drive ссылка |
-| (резерв) | N-O | 13-14 | - |
+| (резерв) | M-N | 12-13 | - |
+| Ссылка на этикетку (OCR) | O | 14 | Google Drive ссылка |
 | Кто занёс | P | 15 | Username создателя заявки |
 | Статус | Q | 16 | Новая / В работе / Завершена |
 | Наименование iiko | R | 17 | Выбранный продукт из iiko |
@@ -218,13 +218,15 @@ SUPERADMIN_IDS=321862714
 GOOGLE_DRIVE_CREDENTIALS_FILE=credentials.json
 GOOGLE_DRIVE_FOLDER_ID=
 
-# Email
-SMTP_SERVER=smtp.yandex.ru
+# Email (Gmail)
+SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
-SMTP_USER=
+SMTP_EMAIL=oz@mnogolososya.ru
 SMTP_PASSWORD=
-IMAP_SERVER=imap.yandex.ru
-IMAP_PORT=993
+GMAIL_IMAP_HOST=imap.gmail.com
+GMAIL_IMAP_PORT=993
+GMAIL_IMAP_USER=oz@mnogolososya.ru
+GMAIL_IMAP_PASSWORD=
 
 # iiko
 IIKO_BASE_URL=https://mnogo-lososya-centralniy-of-co.iiko.it:443/resto/api
