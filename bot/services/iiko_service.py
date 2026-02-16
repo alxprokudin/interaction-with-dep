@@ -386,9 +386,9 @@ class IikoService:
         }
         
         logger.debug(f"OLAP request to {url}")
+        logger.debug(f"OLAP params: {params}")
         
-        response = await self._client.request(
-            method="GET",
+        response = await self._client.post(
             url=url,
             params={"key": token},
             json=params,
