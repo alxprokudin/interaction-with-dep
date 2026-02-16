@@ -19,7 +19,7 @@ from bot.services.google_sheets import google_sheets_service
 from bot.services.google_drive import upload_file_to_drive, get_file_link
 from bot.services.iiko_service import iiko_service, search_products
 from bot.services.act_generator import generate_act_for_request
-from bot.handlers.product_registration import get_user_company_info
+from bot.services.database import get_user_company_info
 
 
 # States для ConversationHandler
@@ -38,7 +38,7 @@ async def show_development_menu(update: Update, context: ContextTypes.DEFAULT_TY
     logger.info(f"show_development_menu: user_id={user_id}")
     
     keyboard = [
-        [InlineKeyboardButton("📝 Создать акт", callback_data="dev:create_act")],
+        [InlineKeyboardButton("📝 Выбрать заявку", callback_data="dev:create_act")],
         [InlineKeyboardButton("📋 Мои заявки в работе", callback_data="dev:my_requests")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="dev:close")],
     ]
@@ -71,7 +71,7 @@ async def create_act_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     context.user_data["company_info"] = {
         "sheet_id": company_info.sheet_id,
-        "folder_id": company_info.folder_id,
+        "drive_folder_id": company_info.drive_folder_id,
         "company_name": company_info.company_name,
     }
     
