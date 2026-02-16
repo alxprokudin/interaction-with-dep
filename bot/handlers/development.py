@@ -374,6 +374,18 @@ async def confirm_create_act(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # 2. Генерируем акт (копирование шаблона Google Sheets + заполнение)
         import asyncio
         
+        # Подготовка данных для акта
+        user_name = f"@{user.username}" if user.username else user.full_name or str(user.id)
+        price_from_partner = selected_request.get("price", 0.0)
+        certificate_link = selected_request.get("certificate_link", "")
+        ocr_link = selected_request.get("ocr_link", "")
+        
+        # Период расчёта цены (7 дней по умолчанию)
+        from datetime import datetime, timedelta
+        date_to = datetime.now()
+        date_from = date_to - timedelta(days=7)
+        period_from_iiko = f"{date_from.strftime('%d.%m.%Y')} - {date_to.strftime('%d.%m.%Y')}"
+        
         act_file_id = await asyncio.to_thread(
             generate_act_for_request,
             selected_request.get("request_id", "REQ-?????"),
@@ -381,6 +393,12 @@ async def confirm_create_act(update: Update, context: ContextTypes.DEFAULT_TYPE)
             selected_request.get("supplier_name", ""),
             selected_product.get("name", ""),
             folder_id,
+            user_name=user_name,
+            certificate_link=certificate_link,
+            ocr_link=ocr_link,
+            price_from_partner=price_from_partner,
+            price_from_iiko=iiko_price,
+            period_from_iiko=period_from_iiko,
         )
         
         if not act_file_id:
@@ -392,12 +410,12 @@ async def confirm_create_act(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info(f"Акт создан: {act_link}")
         
         # 4. Обновляем реестр
-        responsible = f"@{user.username}" if user.username else str(user.id)
+        taken_by = f"@{user.username}" if user.username else str(user.id)
         
         success = await google_sheets_service.update_development_request_for_work(
             sheet_id=company_info.get("sheet_id", ""),
             row_number=selected_request.get("row_number", 0),
-            responsible=responsible,
+            taken_by=taken_by,
             iiko_name=selected_product.get("name", ""),
             iiko_price=iiko_price,
             act_link=act_link or "",

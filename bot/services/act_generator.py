@@ -24,6 +24,14 @@ class ActData:
     supplier_name: str  # Поставщик (фирма, бренд, страна)
     iiko_product_name: str  # Наименование продукта из iiko
     
+    # Новые поля
+    user_name: str = ""  # Кто взял в работу
+    certificate_link: str = ""  # Ссылка на сертификат
+    ocr_link: str = ""  # Ссылка на этикетку (OCR)
+    price_from_partner: float = 0.0  # Цена поставщика
+    price_from_iiko: float = 0.0  # Цена из iiko
+    period_from_iiko: str = ""  # Период расчёта цены
+    
     # Опциональные поля
     production_date: Optional[str] = None  # Дата изготовления
     expiry_date: Optional[str] = None  # Срок годности
@@ -85,7 +93,7 @@ def fill_act_template(spreadsheet_id: str, data: ActData) -> bool:
         # Читаем все значения для поиска плейсхолдеров
         result = service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range="A1:Z50",
+            range="A1:Z55",
         ).execute()
         
         values = result.get("values", [])
@@ -94,9 +102,16 @@ def fill_act_template(spreadsheet_id: str, data: ActData) -> bool:
         # Ищем и заменяем плейсхолдеры
         replacements = {
             "{{id_item}}": data.request_id,
+            "{{user_name}}": data.user_name,
             "{{date}}": data.date,
             "{{name_of_goods}}": data.product_name,
             "{{partner}}": data.supplier_name,
+            "{{name_of_goods_from_iiko}}": data.iiko_product_name,
+            "{{certificate}}": data.certificate_link,
+            "{{OCR}}": data.ocr_link,
+            "{{price_from_partner}}": str(data.price_from_partner) if data.price_from_partner else "",
+            "{{price_from_iiko}}": str(data.price_from_iiko) if data.price_from_iiko else "",
+            "{{period_from_iiko}}": data.period_from_iiko,
         }
         
         updates = []
@@ -203,9 +218,15 @@ def generate_act_for_request(
     supplier_name: str,
     iiko_product_name: str,
     folder_id: str,
+    user_name: str = "",
+    certificate_link: str = "",
+    ocr_link: str = "",
+    price_from_partner: float = 0.0,
+    price_from_iiko: float = 0.0,
+    period_from_iiko: str = "",
 ) -> Optional[str]:
     """
-    Упрощённая функция генерации акта.
+    Функция генерации акта проработки.
     
     Args:
         request_id: ID заявки
@@ -213,6 +234,12 @@ def generate_act_for_request(
         supplier_name: Название поставщика
         iiko_product_name: Название продукта из iiko
         folder_id: ID папки для сохранения
+        user_name: Кто взял в работу
+        certificate_link: Ссылка на сертификат
+        ocr_link: Ссылка на этикетку
+        price_from_partner: Цена поставщика
+        price_from_iiko: Цена из iiko
+        period_from_iiko: Период расчёта цены
         
     Returns:
         ID созданного документа или None
@@ -223,6 +250,12 @@ def generate_act_for_request(
         product_name=product_name,
         supplier_name=supplier_name,
         iiko_product_name=iiko_product_name,
+        user_name=user_name,
+        certificate_link=certificate_link,
+        ocr_link=ocr_link,
+        price_from_partner=price_from_partner,
+        price_from_iiko=price_from_iiko,
+        period_from_iiko=period_from_iiko,
     )
     
     return generate_act(data, folder_id)

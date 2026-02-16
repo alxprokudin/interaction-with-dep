@@ -636,6 +636,13 @@ class GoogleSheetsService:
                     status = row[status_col] if len(row) > status_col else ""
                     
                     if status.lower() == "новая":
+                        # Пробуем получить цену как float
+                        price_str = row[9] if len(row) > 9 else ""
+                        try:
+                            price = float(price_str.replace(",", ".").replace(" ", "")) if price_str else 0.0
+                        except ValueError:
+                            price = 0.0
+                        
                         request_data = {
                             "row_number": row_idx,
                             "date": row[0] if len(row) > 0 else "",
@@ -647,8 +654,10 @@ class GoogleSheetsService:
                             "supplier_inn": row[6] if len(row) > 6 else "",
                             "nomenclature": row[7] if len(row) > 7 else "",
                             "unit": row[8] if len(row) > 8 else "",
-                            "price": row[9] if len(row) > 9 else "",
+                            "price": price,
                             "folder_link": row[10] if len(row) > 10 else "",
+                            "certificate_link": row[11] if len(row) > 11 else "",  # L
+                            "ocr_link": row[12] if len(row) > 12 else "",  # M
                             "status": status,
                         }
                         requests.append(request_data)
@@ -667,7 +676,7 @@ class GoogleSheetsService:
         self,
         sheet_id: str,
         row_number: int,
-        responsible: str,
+        taken_by: str,
         iiko_name: str,
         iiko_price: float,
         act_link: str,
@@ -677,16 +686,18 @@ class GoogleSheetsService:
         Обновить заявку при взятии в работу.
         
         Обновляет колонки:
-        - P (16): Ответственный
         - Q (17): Статус → "В работе"
         - R (18): Наименование iiko
         - S (19): Цена iiko
         - T (20): Ссылка на акт
+        - U (21): Кто взял в работу
+        
+        Колонка P ("Кто занёс") НЕ изменяется.
         
         Args:
             sheet_id: ID таблицы
             row_number: Номер строки (1-based)
-            responsible: Username ответственного
+            taken_by: Username того, кто взял в работу
             iiko_name: Выбранное наименование из iiko
             iiko_price: Цена из iiko
             act_link: Ссылка на файл акта
@@ -697,7 +708,7 @@ class GoogleSheetsService:
         """
         import asyncio
         
-        logger.info(f"update_development_request_for_work: row={row_number}, responsible={responsible}")
+        logger.info(f"update_development_request_for_work: row={row_number}, taken_by={taken_by}")
         
         gc = await self._get_client()
         if not gc:
@@ -709,13 +720,13 @@ class GoogleSheetsService:
                 spreadsheet = gc.open_by_key(sheet_id)
                 worksheet = spreadsheet.worksheet(worksheet_name)
                 
-                # Обновляем колонки P, Q, R, S, T
+                # Обновляем колонки Q, R, S, T, U (P — "Кто занёс" не трогаем)
                 updates = [
-                    (f"P{row_number}", responsible),
                     (f"Q{row_number}", "В работе"),
                     (f"R{row_number}", iiko_name),
                     (f"S{row_number}", str(iiko_price)),
                     (f"T{row_number}", act_link),
+                    (f"U{row_number}", taken_by),  # Кто взял в работу
                 ]
                 
                 for cell, value in updates:
