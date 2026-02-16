@@ -596,10 +596,9 @@ def create_email_contract_completed(
     
     logger.info(f"create_email_contract_completed: supplier={supplier_name}, inn={supplier_inn}")
     
-    # TODO: Заменить на рабочие email: to=["Ol.Pak@x5.ru"], cc=["opak@mnogolososya.ru"]
     return EmailMessage(
-        to=["alxprokudin@gmail.com"],
-        cc=[],
+        to=["Ol.Pak@x5.ru"],
+        cc=["opak@mnogolososya.ru"],
         subject=f"Заключён договор с поставщиком - {supplier_name} {supplier_inn}",
         body=body,
         attachments=attachments or [],
