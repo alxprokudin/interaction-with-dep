@@ -79,6 +79,77 @@ def _save_draft(context: ContextTypes.DEFAULT_TYPE, data: dict) -> None:
     logger.debug(f"Черновик сохранён: keys={list(context.user_data[key].keys())}")
 
 
+# Константы пагинации
+SUPPLIERS_PER_PAGE = 10
+
+
+def _build_suppliers_keyboard(
+    suppliers: list,
+    page: int,
+    company_name: str,
+) -> tuple[list, str]:
+    """
+    Построить клавиатуру поставщиков с пагинацией.
+    
+    Args:
+        suppliers: Полный список поставщиков
+        page: Номер страницы (0-based)
+        company_name: Название компании для заголовка
+        
+    Returns:
+        (keyboard, text) — клавиатура и текст сообщения
+    """
+    total = len(suppliers)
+    total_pages = (total + SUPPLIERS_PER_PAGE - 1) // SUPPLIERS_PER_PAGE if total > 0 else 1
+    
+    # Ограничиваем страницу
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * SUPPLIERS_PER_PAGE
+    end_idx = min(start_idx + SUPPLIERS_PER_PAGE, total)
+    page_suppliers = suppliers[start_idx:end_idx]
+    
+    keyboard = []
+    
+    # Кнопки поставщиков
+    for idx, row in enumerate(page_suppliers):
+        if len(row) > 3 and row[3]:  # Колонка D — Наименование
+            name = row[3][:40]
+            # Глобальный индекс в списке
+            global_idx = start_idx + idx
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"sup_sel:{global_idx}")])
+    
+    # Кнопки пагинации
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"sup_page:{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="sup_page:noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("➡️ Вперёд", callback_data=f"sup_page:{page + 1}"))
+        keyboard.append(nav_buttons)
+    
+    # Кнопка добавления нового
+    keyboard.append([InlineKeyboardButton("➕ Добавить нового поставщика", callback_data="sup_add_new")])
+    
+    # Текст сообщения
+    if total == 0:
+        text = (
+            f"📦 *Заведение продукта на проработку*\n"
+            f"Компания: {company_name}\n\n"
+            "📋 Список поставщиков пуст.\n"
+            "Добавьте нового поставщика:"
+        )
+    else:
+        text = (
+            f"📦 *Заведение продукта на проработку*\n"
+            f"Компания: {company_name}\n\n"
+            f"Выберите поставщика из списка ({total} шт):"
+        )
+    
+    return keyboard, text
+
+
 async def start_product_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало заведения продукта — показ списка поставщиков из Google Sheets."""
     telegram_id = update.effective_user.id
@@ -125,32 +196,12 @@ async def start_product_registration(update: Update, context: ContextTypes.DEFAU
         skip_header=True,
     )
     
-    # Формируем inline-кнопки (показываем первые 20)
-    keyboard = []
-    for idx, row in enumerate(suppliers[:20]):
-        if len(row) > 3 and row[3]:  # Колонка D — Наименование
-            name = row[3][:40]  # Ограничиваем длину
-            keyboard.append([InlineKeyboardButton(name, callback_data=f"sup_sel:{idx}")])
+    # Сохраняем ВЕСЬ список для пагинации
+    context.user_data["suppliers_list"] = suppliers
+    context.user_data["suppliers_page"] = 0
     
-    # Сохраняем список для обработки выбора
-    context.user_data["suppliers_list"] = suppliers[:20]
-    
-    # Добавляем кнопку "Добавить нового"
-    keyboard.append([InlineKeyboardButton("➕ Добавить нового поставщика", callback_data="sup_add_new")])
-    
-    text = (
-        f"📦 *Заведение продукта на проработку*\n"
-        f"Компания: {company_info.company_name}\n\n"
-        "Выберите поставщика из списка:"
-    )
-    
-    if not suppliers:
-        text = (
-            f"📦 *Заведение продукта на проработку*\n"
-            f"Компания: {company_info.company_name}\n\n"
-            "📋 Список поставщиков пуст.\n"
-            "Добавьте нового поставщика:"
-        )
+    # Формируем клавиатуру с пагинацией
+    keyboard, text = _build_suppliers_keyboard(suppliers, 0, company_info.company_name)
     
     await update.message.reply_text(
         text,
@@ -166,6 +217,28 @@ async def supplier_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     data = query.data
     logger.debug(f"supplier_selected: data={data}")
+    
+    # Пагинация
+    if data.startswith("sup_page:"):
+        page_str = data.split(":")[1]
+        if page_str == "noop":
+            # Нажали на номер страницы — ничего не делаем
+            return SUPPLIER
+        
+        page = int(page_str)
+        suppliers = context.user_data.get("suppliers_list", [])
+        company_info = context.user_data.get("product_company_info", {})
+        company_name = company_info.get("company_name", "")
+        
+        context.user_data["suppliers_page"] = page
+        keyboard, text = _build_suppliers_keyboard(suppliers, page, company_name)
+        
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return SUPPLIER
     
     if data == "sup_add_new":
         # Переход к добавлению нового поставщика
