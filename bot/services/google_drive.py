@@ -89,10 +89,20 @@ def upload_file_to_drive(
     folder_id: str,
     filename: str,
     mime_type: str = "application/octet-stream",
+    make_public: bool = False,
 ) -> Optional[str]:
     """
     Загрузить файл в папку Google Drive.
-    Возвращает ID файла или None.
+    
+    Args:
+        file_path: Путь к файлу или BytesIO
+        folder_id: ID папки назначения
+        filename: Имя файла
+        mime_type: MIME-тип
+        make_public: Сделать файл публичным (для IMAGE() в Sheets)
+        
+    Returns:
+        ID файла или None
     """
     from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
     
@@ -112,8 +122,23 @@ def upload_file_to_drive(
             fields="id",
             supportsAllDrives=True,
         ).execute()
-        logger.debug(f"Файл загружен: id={file['id']}")
-        return file["id"]
+        
+        file_id = file["id"]
+        logger.debug(f"Файл загружен: id={file_id}")
+        
+        # Делаем файл публичным для IMAGE() в Sheets
+        if make_public:
+            try:
+                service.permissions().create(
+                    fileId=file_id,
+                    body={"type": "anyone", "role": "reader"},
+                    supportsAllDrives=True,
+                ).execute()
+                logger.debug(f"Файл сделан публичным: {file_id}")
+            except Exception as e:
+                logger.warning(f"Не удалось сделать файл публичным: {e}")
+        
+        return file_id
     except Exception as e:
         logger.error(f"Ошибка загрузки файла: {e}", exc_info=True)
         return None

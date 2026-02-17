@@ -640,12 +640,14 @@ async def complete_photo_uploaded(update: Update, context: ContextTypes.DEFAULT_
     
     try:
         # Загружаем в Google Drive
-        # Сигнатура: upload_file_to_drive(file_path, folder_id, filename)
+        # Сигнатура: upload_file_to_drive(file_path, folder_id, filename, mime_type, make_public)
         file_id = await asyncio.to_thread(
             upload_file_to_drive,
             tmp_path,
             folder_id,
             filename,
+            "image/jpeg",  # mime_type
+            True,  # make_public — для IMAGE() в Sheets
         )
         
         if file_id:
