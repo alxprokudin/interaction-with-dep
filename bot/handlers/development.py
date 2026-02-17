@@ -636,7 +636,7 @@ async def complete_photo_uploaded(update: Update, context: ContextTypes.DEFAULT_
     # Сохраняем во временный файл
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp:
         await file.download_to_drive(tmp.name)
-        tmp_path = tmp.name
+        tmp_path = Path(tmp.name)  # Path, не str!
     
     try:
         # Загружаем в Google Drive
@@ -656,7 +656,7 @@ async def complete_photo_uploaded(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text(f"⚠️ Не удалось загрузить {filename}")
     finally:
         # Удаляем временный файл
-        Path(tmp_path).unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
     
     # Показываем текущее количество фото
     photos_count = len(context.user_data.get("complete_photos", []))
