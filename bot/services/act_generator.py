@@ -259,3 +259,197 @@ def generate_act_for_request(
     )
     
     return generate_act(data, folder_id)
+
+
+def get_act_cell_value(spreadsheet_id: str, cell: str = "C24") -> str:
+    """
+    Получить значение из ячейки акта.
+    
+    Args:
+        spreadsheet_id: ID Google Sheets документа
+        cell: Адрес ячейки (например, "C24")
+        
+    Returns:
+        Значение ячейки как строка
+    """
+    logger.debug(f"get_act_cell_value: spreadsheet_id={spreadsheet_id}, cell={cell}")
+    
+    service = _get_sheets_service()
+    if not service:
+        return ""
+    
+    try:
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=cell,
+        ).execute()
+        
+        values = result.get("values", [])
+        if values and values[0]:
+            value = str(values[0][0])
+            logger.debug(f"Значение ячейки {cell}: {value}")
+            return value
+        return ""
+    except Exception as e:
+        logger.error(f"Ошибка чтения ячейки {cell}: {e}", exc_info=True)
+        return ""
+
+
+def add_photos_to_act(spreadsheet_id: str, photo_links: list[tuple[str, str]]) -> bool:
+    """
+    Добавить фотографии в лист "Фото" акта.
+    
+    Формат: колонка A — ссылка, колонка B — миниатюра через =IMAGE(url)
+    
+    Args:
+        spreadsheet_id: ID Google Sheets документа
+        photo_links: Список кортежей (filename, drive_link)
+        
+    Returns:
+        True если успешно
+    """
+    logger.debug(f"add_photos_to_act: spreadsheet_id={spreadsheet_id}, photos={len(photo_links)}")
+    
+    if not photo_links:
+        return True
+    
+    service = _get_sheets_service()
+    if not service:
+        return False
+    
+    try:
+        # Проверяем/создаём лист "Фото"
+        spreadsheet = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+        ).execute()
+        
+        sheets = spreadsheet.get("sheets", [])
+        photo_sheet_id = None
+        
+        for sheet in sheets:
+            if sheet.get("properties", {}).get("title") == "Фото":
+                photo_sheet_id = sheet["properties"]["sheetId"]
+                break
+        
+        # Если листа нет — создаём
+        if photo_sheet_id is None:
+            request_body = {
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": "Фото",
+                            }
+                        }
+                    }
+                ]
+            }
+            response = service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=request_body,
+            ).execute()
+            photo_sheet_id = response["replies"][0]["addSheet"]["properties"]["sheetId"]
+            logger.debug(f"Создан лист 'Фото' с ID={photo_sheet_id}")
+        
+        # Формируем данные для записи
+        # Заголовки + данные
+        values = [["Файл", "Ссылка", "Превью"]]
+        for filename, link in photo_links:
+            # Преобразуем ссылку для IMAGE()
+            # Формат: https://drive.google.com/file/d/FILE_ID/view -> 
+            #         https://drive.google.com/uc?id=FILE_ID
+            file_id = _extract_file_id_from_link(link)
+            if file_id:
+                image_url = f"https://drive.google.com/uc?id={file_id}"
+                image_formula = f'=IMAGE("{image_url}")'
+            else:
+                image_formula = ""
+            
+            values.append([filename, link, image_formula])
+        
+        # Записываем данные
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="Фото!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": values},
+        ).execute()
+        
+        logger.info(f"Добавлено {len(photo_links)} фото в лист 'Фото'")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка добавления фото в акт: {e}", exc_info=True)
+        return False
+
+
+def _extract_file_id_from_link(link: str) -> str | None:
+    """Извлечь ID файла из ссылки Google Drive."""
+    import re
+    
+    patterns = [
+        r"/d/([a-zA-Z0-9_-]+)",  # /d/FILE_ID/
+        r"id=([a-zA-Z0-9_-]+)",  # id=FILE_ID
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, link)
+        if match:
+            return match.group(1)
+    
+    return None
+
+
+def export_act_to_pdf(spreadsheet_id: str) -> bytes | None:
+    """
+    Экспортировать Google Sheets акт в PDF.
+    
+    Args:
+        spreadsheet_id: ID Google Sheets документа
+        
+    Returns:
+        PDF как bytes или None
+    """
+    from bot.config import BASE_DIR, GOOGLE_DRIVE_CREDENTIALS_FILE
+    
+    logger.debug(f"export_act_to_pdf: spreadsheet_id={spreadsheet_id}")
+    
+    if not GOOGLE_DRIVE_CREDENTIALS_FILE:
+        logger.warning("GOOGLE_DRIVE_CREDENTIALS_FILE не задан")
+        return None
+    
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+        
+        creds_path = BASE_DIR / GOOGLE_DRIVE_CREDENTIALS_FILE
+        credentials = service_account.Credentials.from_service_account_file(
+            str(creds_path),
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+        drive_service = build("drive", "v3", credentials=credentials)
+        
+        # Экспорт в PDF
+        request = drive_service.files().export_media(
+            fileId=spreadsheet_id,
+            mimeType="application/pdf",
+        )
+        
+        file_buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_buffer, request)
+        
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                logger.debug(f"PDF export: {int(status.progress() * 100)}%")
+        
+        pdf_bytes = file_buffer.getvalue()
+        logger.info(f"Акт экспортирован в PDF: {len(pdf_bytes)} bytes")
+        return pdf_bytes
+        
+    except Exception as e:
+        logger.error(f"Ошибка экспорта в PDF: {e}", exc_info=True)
+        return None

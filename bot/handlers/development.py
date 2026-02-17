@@ -16,10 +16,17 @@ from telegram.ext import (
 )
 
 from bot.services.google_sheets import google_sheets_service
-from bot.services.google_drive import get_spreadsheet_link
+from bot.services.google_drive import get_spreadsheet_link, upload_file_to_drive, get_file_link
 from bot.services.iiko_service import iiko_service, search_products
-from bot.services.act_generator import generate_act_for_request
+from bot.services.act_generator import (
+    generate_act_for_request,
+    get_act_cell_value,
+    add_photos_to_act,
+    export_act_to_pdf,
+)
 from bot.services.database import get_user_company_info
+from bot.keyboards.main import get_main_menu_keyboard
+from bot.config import SUPERADMIN_IDS
 
 
 # States для ConversationHandler
@@ -29,7 +36,14 @@ from bot.services.database import get_user_company_info
     DEV_SEARCH_PRODUCT,
     DEV_SELECT_PRODUCT,
     DEV_CONFIRM,
-) = range(5)
+    # Новые состояния для завершения проработки
+    COMPLETE_SELECT_REQUEST,  # Выбор заявки для завершения
+    COMPLETE_UPLOAD_PHOTOS,   # Загрузка фото
+    COMPLETE_RESULT,          # Подходит / Не подходит
+    COMPLETE_COMMENT,         # Комментарий
+    COMPLETE_MASS_PRORABOTKA, # Массовая проработка
+    COMPLETE_CONFIRM,         # Подтверждение
+) = range(11)
 
 
 async def show_development_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -39,12 +53,11 @@ async def show_development_menu(update: Update, context: ContextTypes.DEFAULT_TY
     
     keyboard = [
         [InlineKeyboardButton("📝 Выбрать заявку", callback_data="dev:create_act")],
-        [InlineKeyboardButton("📋 Мои заявки в работе", callback_data="dev:my_requests")],
         [InlineKeyboardButton("❌ Закрыть", callback_data="dev:close")],
     ]
     
     await update.message.reply_text(
-        "🔄 <b>Процесс проработки</b>\n\n"
+        "🔄 <b>Проработки (Заявки)</b>\n\n"
         "Выберите действие:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -452,16 +465,575 @@ async def confirm_create_act(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def my_requests_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показать заявки пользователя в работе (заглушка)."""
+    """Показать заявки пользователя в работе (из меню проработки)."""
     query = update.callback_query
     await query.answer()
     
-    await query.edit_message_text(
-        "📋 <b>Мои заявки в работе</b>\n\n"
-        "Этот раздел будет реализован в Этапе 2.",
-        parse_mode="HTML",
+    # Используем общую логику
+    return await _show_user_requests(update, context, is_callback=True)
+
+
+async def start_my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Точка входа для кнопки '📋 Заявки в работе' из главного меню."""
+    logger.info(f"start_my_requests: user_id={update.effective_user.id}")
+    return await _show_user_requests(update, context, is_callback=False)
+
+
+async def _show_user_requests(
+    update: Update, 
+    context: ContextTypes.DEFAULT_TYPE, 
+    is_callback: bool = False
+) -> int:
+    """Общая логика показа заявок пользователя в работе."""
+    user = update.effective_user
+    user_id = user.id
+    
+    # Определяем username
+    username = f"@{user.username}" if user.username else user.full_name or str(user_id)
+    
+    # Получаем информацию о компании
+    company_info = await get_user_company_info(user_id)
+    if not company_info:
+        msg = "❌ Вы не привязаны к компании. Используйте /start для регистрации."
+        if is_callback:
+            await update.callback_query.edit_message_text(msg)
+        else:
+            is_superadmin = user_id in SUPERADMIN_IDS
+            await update.message.reply_text(msg, reply_markup=get_main_menu_keyboard(is_superadmin))
+        return ConversationHandler.END
+    
+    context.user_data["complete_company_info"] = {
+        "sheet_id": company_info.sheet_id,
+        "drive_folder_id": company_info.drive_folder_id,
+        "company_name": company_info.company_name,
+    }
+    
+    # Получаем заявки пользователя
+    requests = await google_sheets_service.get_user_in_progress_requests(
+        sheet_id=company_info.sheet_id,
+        username=username,
     )
     
+    if not requests:
+        msg = (
+            "📭 <b>Нет активных заявок</b>\n\n"
+            "У вас нет заявок в работе.\n"
+            "Сначала выберите заявку через меню «Проработки (Заявки)» → «Выбрать заявку»."
+        )
+        if is_callback:
+            await update.callback_query.edit_message_text(msg, parse_mode="HTML")
+        else:
+            is_superadmin = user_id in SUPERADMIN_IDS
+            await update.message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_menu_keyboard(is_superadmin))
+        return ConversationHandler.END
+    
+    # Сохраняем заявки
+    context.user_data["complete_requests"] = requests
+    
+    # Формируем клавиатуру
+    keyboard = []
+    for req in requests[:10]:
+        label = f"{req['request_id']} | {req['supplier_name'][:15]} | {req['nomenclature'][:15]}"
+        keyboard.append([
+            InlineKeyboardButton(label, callback_data=f"compl:req:{req['row_number']}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")])
+    
+    msg = (
+        f"📋 <b>Заявки в работе</b> ({len(requests)} шт)\n\n"
+        "Выберите заявку для завершения:"
+    )
+    
+    if is_callback:
+        await update.callback_query.edit_message_text(
+            msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text(
+            msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return COMPLETE_SELECT_REQUEST
+
+
+async def complete_request_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь выбрал заявку для завершения."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    logger.debug(f"complete_request_selected: data={data}")
+    
+    row_number = int(data.split(":")[2])
+    requests = context.user_data.get("complete_requests", [])
+    
+    selected = None
+    for req in requests:
+        if req["row_number"] == row_number:
+            selected = req
+            break
+    
+    if not selected:
+        await query.edit_message_text("❌ Заявка не найдена.")
+        return ConversationHandler.END
+    
+    context.user_data["complete_selected"] = selected
+    context.user_data["complete_photos"] = []  # Список загруженных фото
+    
+    # Извлекаем act_id из ссылки на акт
+    act_link = selected.get("act_link", "")
+    act_id = _extract_file_id_from_act_link(act_link)
+    context.user_data["complete_act_id"] = act_id
+    
+    # Извлекаем folder_id из ссылки на папку
+    folder_link = selected.get("folder_link", "")
+    folder_id = _extract_folder_id(folder_link)
+    context.user_data["complete_folder_id"] = folder_id
+    
+    keyboard = [[InlineKeyboardButton("✅ Завершить загрузку фото", callback_data="compl:photos_done")]]
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")])
+    
+    await query.edit_message_text(
+        f"📸 <b>Загрузка фото проработки</b>\n\n"
+        f"📦 Заявка: {selected['request_id']}\n"
+        f"📋 Товар: {selected['nomenclature']}\n\n"
+        "Отправьте фотографии проработки (можно несколько).\n"
+        "Когда закончите — нажмите «Завершить загрузку фото».",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    
+    return COMPLETE_UPLOAD_PHOTOS
+
+
+async def complete_photo_uploaded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь загрузил фото."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+    
+    photo = update.message.photo[-1] if update.message.photo else None
+    document = update.message.document if update.message.document else None
+    
+    if not photo and not document:
+        await update.message.reply_text("Пожалуйста, отправьте фото или документ.")
+        return COMPLETE_UPLOAD_PHOTOS
+    
+    folder_id = context.user_data.get("complete_folder_id")
+    if not folder_id:
+        await update.message.reply_text("❌ Ошибка: не найдена папка для загрузки.")
+        return COMPLETE_UPLOAD_PHOTOS
+    
+    # Скачиваем файл
+    if photo:
+        file = await update.message.effective_attachment.get_file()
+        filename = f"photo_{len(context.user_data.get('complete_photos', [])) + 1}.jpg"
+    else:
+        file = await document.get_file()
+        filename = document.file_name or f"file_{len(context.user_data.get('complete_photos', [])) + 1}"
+    
+    # Сохраняем во временный файл
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp:
+        await file.download_to_drive(tmp.name)
+        tmp_path = tmp.name
+    
+    try:
+        # Загружаем в Google Drive
+        file_id = await asyncio.to_thread(
+            upload_file_to_drive,
+            tmp_path,
+            filename,
+            folder_id,
+        )
+        
+        if file_id:
+            link = get_file_link(file_id)
+            context.user_data.setdefault("complete_photos", []).append((filename, link))
+            logger.info(f"Фото загружено: {filename} -> {link}")
+        else:
+            await update.message.reply_text(f"⚠️ Не удалось загрузить {filename}")
+    finally:
+        # Удаляем временный файл
+        Path(tmp_path).unlink(missing_ok=True)
+    
+    # Показываем текущее количество фото
+    photos_count = len(context.user_data.get("complete_photos", []))
+    keyboard = [[InlineKeyboardButton(f"✅ Завершить загрузку ({photos_count} фото)", callback_data="compl:photos_done")]]
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")])
+    
+    await update.message.reply_text(
+        f"📸 Загружено фото: {photos_count}\n\n"
+        "Отправьте ещё фото или нажмите «Завершить загрузку».",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    
+    return COMPLETE_UPLOAD_PHOTOS
+
+
+async def complete_photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь завершил загрузку фото."""
+    import asyncio
+    
+    query = update.callback_query
+    await query.answer()
+    
+    photos = context.user_data.get("complete_photos", [])
+    act_id = context.user_data.get("complete_act_id")
+    
+    # Добавляем фото в акт
+    if photos and act_id:
+        await asyncio.to_thread(add_photos_to_act, act_id, photos)
+        logger.info(f"Добавлено {len(photos)} фото в акт {act_id}")
+    
+    # Спрашиваем результат
+    keyboard = [
+        [InlineKeyboardButton("✅ Подходит", callback_data="compl:result:yes")],
+        [InlineKeyboardButton("❌ Не подходит", callback_data="compl:result:no")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")],
+    ]
+    
+    await query.edit_message_text(
+        "📊 <b>Результат проработки</b>\n\n"
+        f"Загружено фото: {len(photos)}\n\n"
+        "Продукт подходит для закупки?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    
+    return COMPLETE_RESULT
+
+
+async def complete_result_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь выбрал результат (подходит/не подходит)."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    result = "Подходит" if data == "compl:result:yes" else "Не подходит"
+    context.user_data["complete_result"] = result
+    
+    keyboard = [
+        [InlineKeyboardButton("➡️ Пропустить", callback_data="compl:comment:skip")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")],
+    ]
+    
+    await query.edit_message_text(
+        f"📝 <b>Комментарий</b>\n\n"
+        f"Результат: {result}\n\n"
+        "Введите комментарий (или нажмите «Пропустить»):",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    
+    return COMPLETE_COMMENT
+
+
+async def complete_comment_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь ввёл комментарий."""
+    comment = update.message.text.strip()
+    context.user_data["complete_comment"] = comment
+    
+    return await _ask_mass_prorabotka_or_finish(update, context, is_message=True)
+
+
+async def complete_comment_skipped(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь пропустил комментарий."""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data["complete_comment"] = ""
+    
+    return await _ask_mass_prorabotka_or_finish(update, context, is_message=False)
+
+
+async def _ask_mass_prorabotka_or_finish(
+    update: Update, 
+    context: ContextTypes.DEFAULT_TYPE,
+    is_message: bool = False
+) -> int:
+    """Спросить про массовую проработку (если подходит) или перейти к завершению."""
+    result = context.user_data.get("complete_result", "")
+    
+    if result == "Подходит":
+        keyboard = [
+            [InlineKeyboardButton("✅ Да", callback_data="compl:mass:yes")],
+            [InlineKeyboardButton("❌ Нет", callback_data="compl:mass:no")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")],
+        ]
+        
+        msg = (
+            "🔄 <b>Массовая проработка</b>\n\n"
+            "Нужна ли массовая проработка этого продукта?"
+        )
+        
+        if is_message:
+            await update.message.reply_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.callback_query.edit_message_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        return COMPLETE_MASS_PRORABOTKA
+    else:
+        # Если не подходит — сразу к завершению
+        context.user_data["complete_mass_prorabotka"] = ""
+        return await _show_complete_confirmation(update, context, is_message)
+
+
+async def complete_mass_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пользователь выбрал массовую проработку."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    mass = "Да" if data == "compl:mass:yes" else "Нет"
+    context.user_data["complete_mass_prorabotka"] = mass
+    
+    return await _show_complete_confirmation(update, context, is_message=False)
+
+
+async def _show_complete_confirmation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    is_message: bool = False
+) -> int:
+    """Показать подтверждение завершения."""
+    import asyncio
+    
+    selected = context.user_data.get("complete_selected", {})
+    result = context.user_data.get("complete_result", "")
+    comment = context.user_data.get("complete_comment", "")
+    mass = context.user_data.get("complete_mass_prorabotka", "")
+    photos_count = len(context.user_data.get("complete_photos", []))
+    act_id = context.user_data.get("complete_act_id")
+    
+    # Читаем вес из ячейки C24 акта
+    weight = ""
+    if act_id:
+        weight = await asyncio.to_thread(get_act_cell_value, act_id, "C24")
+    context.user_data["complete_weight"] = weight
+    
+    full_result = f"{result}: {comment}" if comment else result
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Подтвердить и завершить", callback_data="compl:finish")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="compl:cancel")],
+    ]
+    
+    msg = (
+        f"📋 <b>Подтверждение завершения</b>\n\n"
+        f"📦 Заявка: {selected.get('request_id', '')}\n"
+        f"📋 Товар: {selected.get('nomenclature', '')}\n"
+        f"📸 Фото: {photos_count}\n"
+        f"📊 Результат: {full_result}\n"
+    )
+    
+    if mass:
+        msg += f"🔄 Массовая проработка: {mass}\n"
+    
+    if weight:
+        msg += f"⚖️ Вес с этикетки: {weight}\n"
+    
+    msg += "\nНажмите «Подтвердить» для завершения."
+    
+    if is_message:
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.callback_query.edit_message_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    return COMPLETE_CONFIRM
+
+
+async def complete_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершить проработку."""
+    import asyncio
+    
+    query = update.callback_query
+    await query.answer("Завершаем...")
+    
+    user_id = update.effective_user.id
+    is_superadmin = user_id in SUPERADMIN_IDS
+    
+    selected = context.user_data.get("complete_selected", {})
+    company_info = context.user_data.get("complete_company_info", {})
+    result = context.user_data.get("complete_result", "")
+    comment = context.user_data.get("complete_comment", "")
+    mass = context.user_data.get("complete_mass_prorabotka", "")
+    weight = context.user_data.get("complete_weight", "")
+    act_id = context.user_data.get("complete_act_id")
+    
+    full_result = f"{result}: {comment}" if comment else result
+    sheet_id = company_info.get("sheet_id", "")
+    row_number = selected.get("row_number", 0)
+    
+    # 1. Обновляем реестр
+    success = await google_sheets_service.complete_development_request(
+        sheet_id=sheet_id,
+        row_number=row_number,
+        result=full_result,
+        mass_prorabotka=mass,
+        weight_from_label=weight,
+    )
+    
+    if not success:
+        await query.edit_message_text("❌ Ошибка обновления реестра. Попробуйте позже.")
+        _cleanup_complete_context(context)
+        return ConversationHandler.END
+    
+    # 2. Экспортируем PDF
+    pdf_bytes = None
+    if act_id:
+        pdf_bytes = await asyncio.to_thread(export_act_to_pdf, act_id)
+    
+    # 3. Отправляем email поставщику
+    supplier_inn = selected.get("supplier_inn", "")
+    supplier_email = await google_sheets_service.get_supplier_email_by_inn(sheet_id, supplier_inn)
+    
+    email_sent = False
+    if supplier_email and pdf_bytes:
+        email_sent = await _send_completion_email(
+            to_email=supplier_email,
+            selected=selected,
+            result=full_result,
+            mass=mass,
+            pdf_bytes=pdf_bytes,
+        )
+    
+    # Формируем итоговое сообщение
+    msg = (
+        f"✅ <b>Проработка завершена!</b>\n\n"
+        f"📦 Заявка: {selected.get('request_id', '')}\n"
+        f"📋 Товар: {selected.get('nomenclature', '')}\n"
+        f"📊 Результат: {full_result}\n"
+    )
+    
+    if mass:
+        msg += f"🔄 Массовая проработка: {mass}\n"
+    
+    if email_sent:
+        msg += f"\n📧 Email отправлен на {supplier_email}"
+    elif supplier_email:
+        msg += f"\n⚠️ Не удалось отправить email на {supplier_email}"
+    else:
+        msg += "\n⚠️ Email поставщика не найден"
+    
+    await query.edit_message_text(msg, parse_mode="HTML")
+    
+    # Показываем главное меню
+    await query.message.reply_text(
+        "Используйте меню для продолжения работы.",
+        reply_markup=get_main_menu_keyboard(is_superadmin),
+    )
+    
+    _cleanup_complete_context(context)
+    return ConversationHandler.END
+
+
+async def _send_completion_email(
+    to_email: str,
+    selected: dict,
+    result: str,
+    mass: str,
+    pdf_bytes: bytes,
+) -> bool:
+    """Отправить email о завершении проработки."""
+    from bot.services.email_service import send_email, EmailMessage, DEFAULT_CC
+    
+    subject = f"Результат проработки: {selected.get('nomenclature', 'Товар')}"
+    
+    body = f"""Результат проработки продукта
+
+Заявка: {selected.get('request_id', '')}
+Товар: {selected.get('nomenclature', '')}
+Поставщик: {selected.get('supplier_name', '')}
+Результат: {result}
+"""
+    
+    if mass:
+        body += f"Массовая проработка: {mass}\n"
+    
+    body += """
+Акт проработки прикреплён к письму.
+
+С уважением,
+WorkFlow Hub
+"""
+    
+    # Формируем вложение
+    attachments = [
+        {
+            "filename": f"Акт_проработки_{selected.get('request_id', 'XXX')}.pdf",
+            "content": pdf_bytes,
+            "content_type": "application/pdf",
+        }
+    ]
+    
+    email = EmailMessage(
+        to=[to_email],
+        cc=DEFAULT_CC,
+        subject=subject,
+        body=body,
+        attachments=attachments,
+    )
+    
+    return await send_email(email)
+
+
+def _extract_file_id_from_act_link(link: str) -> str | None:
+    """Извлечь ID файла из ссылки на Google Sheets акт."""
+    if not link:
+        return None
+    
+    # https://docs.google.com/spreadsheets/d/FILE_ID/edit
+    patterns = [
+        r"/d/([a-zA-Z0-9_-]+)",
+        r"id=([a-zA-Z0-9_-]+)",
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, link)
+        if match:
+            return match.group(1)
+    
+    return None
+
+
+def _cleanup_complete_context(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Очистить данные контекста завершения."""
+    keys = [
+        "complete_company_info",
+        "complete_requests",
+        "complete_selected",
+        "complete_photos",
+        "complete_act_id",
+        "complete_folder_id",
+        "complete_result",
+        "complete_comment",
+        "complete_mass_prorabotka",
+        "complete_weight",
+    ]
+    for key in keys:
+        context.user_data.pop(key, None)
+
+
+async def complete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена процесса завершения."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        await query.edit_message_text("❌ Завершение отменено.")
+    else:
+        await update.message.reply_text("❌ Завершение отменено.")
+    
+    user_id = update.effective_user.id
+    is_superadmin = user_id in SUPERADMIN_IDS
+    
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "Используйте меню для продолжения.",
+            reply_markup=get_main_menu_keyboard(is_superadmin),
+        )
+    
+    _cleanup_complete_context(context)
     return ConversationHandler.END
 
 
@@ -529,11 +1101,16 @@ def get_development_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.Regex("^🔄 Процесс проработки$"),
+                filters.Regex("^🔄 Проработки \\(Заявки\\)$"),
                 show_development_menu,
+            ),
+            MessageHandler(
+                filters.Regex("^📋 Заявки в работе$"),
+                start_my_requests,
             ),
         ],
         states={
+            # === Этап 1: Создание акта ===
             DEV_MENU: [
                 CallbackQueryHandler(create_act_start, pattern=r"^dev:create_act$"),
                 CallbackQueryHandler(my_requests_handler, pattern=r"^dev:my_requests$"),
@@ -557,9 +1134,37 @@ def get_development_handler() -> ConversationHandler:
                 CallbackQueryHandler(manual_search_start, pattern=r"^dev:manual_search$"),
                 CallbackQueryHandler(cancel_handler, pattern=r"^dev:cancel$"),
             ],
+            # === Этап 2: Завершение проработки ===
+            COMPLETE_SELECT_REQUEST: [
+                CallbackQueryHandler(complete_request_selected, pattern=r"^compl:req:\d+$"),
+                CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
+            ],
+            COMPLETE_UPLOAD_PHOTOS: [
+                MessageHandler(filters.PHOTO | filters.Document.ALL, complete_photo_uploaded),
+                CallbackQueryHandler(complete_photos_done, pattern=r"^compl:photos_done$"),
+                CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
+            ],
+            COMPLETE_RESULT: [
+                CallbackQueryHandler(complete_result_selected, pattern=r"^compl:result:(yes|no)$"),
+                CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
+            ],
+            COMPLETE_COMMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, complete_comment_received),
+                CallbackQueryHandler(complete_comment_skipped, pattern=r"^compl:comment:skip$"),
+                CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
+            ],
+            COMPLETE_MASS_PRORABOTKA: [
+                CallbackQueryHandler(complete_mass_selected, pattern=r"^compl:mass:(yes|no)$"),
+                CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
+            ],
+            COMPLETE_CONFIRM: [
+                CallbackQueryHandler(complete_finish, pattern=r"^compl:finish$"),
+                CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
+            ],
         },
         fallbacks=[
             CallbackQueryHandler(cancel_handler, pattern=r"^dev:cancel$"),
+            CallbackQueryHandler(complete_cancel, pattern=r"^compl:cancel$"),
             MessageHandler(filters.Regex("^/cancel$"), cancel_handler),
         ],
         name="development_process",

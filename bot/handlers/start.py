@@ -104,7 +104,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     is_superadmin = user_id in SUPERADMIN_IDS
 
-    if text == "🔄 Процесс проработки":
+    if text == "🔄 Проработки (Заявки)":
         from bot.handlers.development import show_development_menu
 
         await show_development_menu(update, context)

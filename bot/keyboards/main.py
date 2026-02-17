@@ -10,7 +10,7 @@ def get_main_menu_keyboard(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("📦 Заведение продукта на проработку")],
         [KeyboardButton("➕ Добавить поставщика"), KeyboardButton("✅ Завершить заявку")],
-        [KeyboardButton("🔄 Процесс проработки")],
+        [KeyboardButton("🔄 Проработки (Заявки)"), KeyboardButton("📋 Заявки в работе")],
         [KeyboardButton("⚙️ Настройки")],
     ]
     if is_superadmin:

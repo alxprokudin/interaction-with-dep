@@ -1472,7 +1472,7 @@ def get_product_registration_handler() -> ConversationHandler:
             MessageHandler(filters.Regex("^/cancel$"), cancel_registration),
             MessageHandler(filters.Regex("^❌ Отмена$"), cancel_registration),
             MessageHandler(
-                filters.Regex("^(📦 Заведение продукта на проработку|🔄 Процесс проработки)$"),
+                filters.Regex("^(📦 Заведение продукта на проработку|🔄 Проработки \\(Заявки\\))$"),
                 cancel_registration,
             ),
         ],

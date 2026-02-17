@@ -740,6 +740,201 @@ class GoogleSheetsService:
             logger.error(f"Ошибка обновления заявки: {e}", exc_info=True)
             return False
 
+    async def get_user_in_progress_requests(
+        self,
+        sheet_id: str,
+        username: str,
+        worksheet_name: str = "Реестр_Проработки",
+    ) -> list[dict[str, Any]]:
+        """
+        Получить заявки пользователя со статусом "В работе".
+        
+        Args:
+            sheet_id: ID таблицы
+            username: Username пользователя (из колонки U)
+            worksheet_name: Название листа
+            
+        Returns:
+            Список заявок пользователя в работе
+        """
+        import asyncio
+        
+        logger.debug(f"get_user_in_progress_requests: sheet_id={sheet_id}, username={username}")
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return []
+        
+        try:
+            def _get_in_progress():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                all_rows = worksheet.get_all_values()
+                if len(all_rows) < 2:
+                    return []
+                
+                requests = []
+                
+                # Индексы колонок (0-based)
+                # Q=16 (Статус), U=20 (Кто взял в работу), T=19 (Ссылка на акт)
+                status_col = 16  # Q
+                taken_by_col = 20  # U
+                act_link_col = 19  # T
+                
+                for row_idx, row in enumerate(all_rows[1:], start=2):
+                    status = row[status_col] if len(row) > status_col else ""
+                    taken_by = row[taken_by_col] if len(row) > taken_by_col else ""
+                    
+                    # Проверяем: статус "В работе" и username совпадает
+                    if status.lower() == "в работе" and taken_by.lower() == username.lower():
+                        # Пробуем получить цену как float
+                        price_str = row[9] if len(row) > 9 else ""
+                        try:
+                            price = float(price_str.replace(",", ".").replace(" ", "")) if price_str else 0.0
+                        except ValueError:
+                            price = 0.0
+                        
+                        request_data = {
+                            "row_number": row_idx,
+                            "date": row[0] if len(row) > 0 else "",
+                            "request_id": row[1] if len(row) > 1 else "",
+                            "request_type": row[2] if len(row) > 2 else "",
+                            "supplier_name": row[5] if len(row) > 5 else "",
+                            "supplier_inn": row[6] if len(row) > 6 else "",
+                            "nomenclature": row[7] if len(row) > 7 else "",
+                            "unit": row[8] if len(row) > 8 else "",
+                            "price": price,
+                            "folder_link": row[10] if len(row) > 10 else "",
+                            "act_link": row[act_link_col] if len(row) > act_link_col else "",
+                            "iiko_name": row[17] if len(row) > 17 else "",  # R
+                            "iiko_price": row[18] if len(row) > 18 else "",  # S
+                            "status": status,
+                        }
+                        requests.append(request_data)
+                
+                return requests
+            
+            result = await asyncio.to_thread(_get_in_progress)
+            logger.info(f"Найдено {len(result)} заявок в работе для {username}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения заявок в работе: {e}", exc_info=True)
+            return []
+
+    async def complete_development_request(
+        self,
+        sheet_id: str,
+        row_number: int,
+        result: str,
+        mass_prorabotka: str,
+        weight_from_label: str,
+        worksheet_name: str = "Реестр_Проработки",
+    ) -> bool:
+        """
+        Завершить заявку проработки.
+        
+        Обновляет колонки:
+        - Q (16): Статус → "Завершена"
+        - V (21): Результат проработки
+        - W (22): Массовая проработка (Да/Нет)
+        - X (23): Вес с этикетки
+        - Y (24): Дата завершения
+        
+        Args:
+            sheet_id: ID таблицы
+            row_number: Номер строки
+            result: Результат (Подходит/Не подходит + комментарий)
+            mass_prorabotka: "Да" / "Нет" / ""
+            weight_from_label: Значение из C24 акта
+            worksheet_name: Название листа
+        """
+        import asyncio
+        from datetime import datetime
+        
+        logger.info(f"complete_development_request: row={row_number}, result={result[:30]}...")
+        
+        gc = await self._get_client()
+        if not gc:
+            logger.error("Google API не настроен")
+            return False
+        
+        try:
+            def _complete():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                completion_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+                
+                updates = [
+                    (f"Q{row_number}", "Завершена"),
+                    (f"V{row_number}", result),
+                    (f"W{row_number}", mass_prorabotka),
+                    (f"X{row_number}", weight_from_label),
+                    (f"Y{row_number}", completion_date),
+                ]
+                
+                for cell, value in updates:
+                    worksheet.update_acell(cell, value)
+                    logger.debug(f"Обновлена ячейка {cell}")
+                
+                return True
+            
+            return await asyncio.to_thread(_complete)
+        except Exception as e:
+            logger.error(f"Ошибка завершения заявки: {e}", exc_info=True)
+            return False
+
+    async def get_supplier_email_by_inn(
+        self,
+        sheet_id: str,
+        inn: str,
+        worksheet_name: str = "Реестр_Поставщики",
+    ) -> str | None:
+        """
+        Получить email поставщика по ИНН.
+        
+        Args:
+            sheet_id: ID таблицы
+            inn: ИНН поставщика
+            worksheet_name: Название листа
+            
+        Returns:
+            Email поставщика или None
+        """
+        import asyncio
+        
+        logger.debug(f"get_supplier_email_by_inn: inn={inn}")
+        
+        gc = await self._get_client()
+        if not gc:
+            return None
+        
+        try:
+            def _get_email():
+                spreadsheet = gc.open_by_key(sheet_id)
+                worksheet = spreadsheet.worksheet(worksheet_name)
+                
+                all_rows = worksheet.get_all_values()
+                if len(all_rows) < 2:
+                    return None
+                
+                # Колонка B = ИНН (индекс 1), колонка E = Email (индекс 4)
+                for row in all_rows[1:]:
+                    row_inn = row[1] if len(row) > 1 else ""
+                    if row_inn == inn:
+                        email = row[4] if len(row) > 4 else ""
+                        return email if email else None
+                
+                return None
+            
+            return await asyncio.to_thread(_get_email)
+        except Exception as e:
+            logger.error(f"Ошибка получения email поставщика: {e}", exc_info=True)
+            return None
+
 
 # Singleton instance
 google_sheets_service = GoogleSheetsService()

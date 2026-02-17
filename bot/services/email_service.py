@@ -187,28 +187,60 @@ def _create_mime_message(
         from urllib.parse import quote
         
         for item in attachments:
-            # Поддержка двух форматов: Path или (name, Path)
-            if isinstance(item, tuple):
-                display_name, file_path = item
-            else:
-                file_path = item
-                display_name = file_path.name
+            # Поддержка трёх форматов:
+            # 1. Path — имя файла из path.name
+            # 2. (name, Path) — указанное имя + файл
+            # 3. dict(filename, content, content_type) — bytes напрямую
             
-            if file_path.exists():
-                with open(file_path, "rb") as f:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(f.read())
+            if isinstance(item, dict):
+                # Формат: {"filename": "...", "content": bytes, "content_type": "..."}
+                display_name = item.get("filename", "attachment")
+                content = item.get("content", b"")
+                content_type = item.get("content_type", "application/octet-stream")
+                
+                maintype, subtype = content_type.split("/", 1) if "/" in content_type else ("application", "octet-stream")
+                part = MIMEBase(maintype, subtype)
+                part.set_payload(content)
                 encoders.encode_base64(part)
                 
-                # Кодируем имя файла по RFC 2231 для поддержки кириллицы
-                # filename* использует URL-encoding для UTF-8
-                encoded_filename = quote(display_name, safe='')
                 part.add_header(
                     "Content-Disposition",
                     "attachment",
-                    filename=("utf-8", "", display_name),  # RFC 2231 формат
+                    filename=("utf-8", "", display_name),
                 )
                 message.attach(part)
+                
+            elif isinstance(item, tuple):
+                display_name, file_path = item
+                if file_path.exists():
+                    with open(file_path, "rb") as f:
+                        part = MIMEBase("application", "octet-stream")
+                        part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    
+                    part.add_header(
+                        "Content-Disposition",
+                        "attachment",
+                        filename=("utf-8", "", display_name),
+                    )
+                    message.attach(part)
+            else:
+                # Path
+                file_path = item
+                display_name = file_path.name
+                
+                if file_path.exists():
+                    with open(file_path, "rb") as f:
+                        part = MIMEBase("application", "octet-stream")
+                        part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    
+                    part.add_header(
+                        "Content-Disposition",
+                        "attachment",
+                        filename=("utf-8", "", display_name),
+                    )
+                    message.attach(part)
     
     return message
 
