@@ -627,7 +627,7 @@ async def complete_photo_uploaded(update: Update, context: ContextTypes.DEFAULT_
     
     # Скачиваем файл
     if photo:
-        file = await update.message.effective_attachment.get_file()
+        file = await photo.get_file()  # photo — это PhotoSize, не tuple
         filename = f"photo_{len(context.user_data.get('complete_photos', [])) + 1}.jpg"
     else:
         file = await document.get_file()
