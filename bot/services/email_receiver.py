@@ -307,7 +307,7 @@ class EmailReceiver:
             Список писем, которые являются ответами на наши отправленные.
         """
         import re
-        from sqlalchemy import select
+        from sqlalchemy import select, or_
         from bot.models.base import async_session_factory
         from bot.models.sent_email import SentEmail
         from bot.services.email_service import extract_tracking_code
@@ -324,10 +324,21 @@ class EmailReceiver:
                 select(SentEmail).where(SentEmail.reply_received == False)
             )
             pending_emails = result.scalars().all()
+            
+            # Также получаем уже обработанные reply_message_id, чтобы не обрабатывать повторно
+            processed_result = await session.execute(
+                select(SentEmail.reply_message_id).where(
+                    SentEmail.reply_received == True,
+                    SentEmail.reply_message_id.isnot(None)
+                )
+            )
+            processed_reply_ids = {r[0] for r in processed_result.fetchall()}
         
         if not pending_emails:
             logger.debug("Нет ожидающих ответа писем")
             return []
+        
+        logger.debug(f"Ожидающих ответа: {len(pending_emails)}, уже обработанных ответов: {len(processed_reply_ids)}")
         
         # Строим индексы для поиска
         our_message_ids = {e.message_id for e in pending_emails}
@@ -346,6 +357,11 @@ class EmailReceiver:
         matched_message_ids: set[str] = set()  # Для избежания дублей
         
         for reply in all_replies:
+            # Пропускаем уже обработанные входящие письма
+            if reply.message_id in processed_reply_ids:
+                logger.debug(f"Пропускаем уже обработанный ответ: {reply.message_id}")
+                continue
+            
             matched_email = None
             matched_code = None
             subject_lower = reply.subject.lower() if reply.subject else ""
