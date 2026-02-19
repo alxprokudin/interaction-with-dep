@@ -221,19 +221,19 @@ def calculate_abc_categories(df: pd.DataFrame) -> pd.DataFrame:
 
 async def main():
     """Основная функция."""
+    global IIKO_BASE_URL, IIKO_LOGIN, IIKO_PASSWORD
     
-    # Проверяем пароль
+    # Пробуем загрузить из .env
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+    
+    IIKO_BASE_URL = os.getenv("IIKO_BASE_URL", IIKO_BASE_URL)
+    IIKO_LOGIN = os.getenv("IIKO_LOGIN", IIKO_LOGIN)
+    IIKO_PASSWORD = os.getenv("IIKO_PASSWORD", "")
+    
     if not IIKO_PASSWORD:
-        # Пробуем загрузить из .env
-        from dotenv import load_dotenv
-        load_dotenv(Path(__file__).parent.parent / ".env")
-        
-        global IIKO_PASSWORD
-        IIKO_PASSWORD = os.getenv("IIKO_PASSWORD", "")
-        
-        if not IIKO_PASSWORD:
-            logger.error("IIKO_PASSWORD не задан!")
-            return
+        logger.error("IIKO_PASSWORD не задан!")
+        return
     
     # Период: последняя неделя
     date_to = datetime.now()
