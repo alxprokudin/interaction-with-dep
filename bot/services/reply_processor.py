@@ -27,19 +27,58 @@ EMAIL_TYPE_DESCRIPTIONS = {
 }
 
 
-def extract_reply_text(full_text: str) -> str:
+def _html_to_text(html: str) -> str:
+    """Простое извлечение текста из HTML."""
+    import re
+    
+    if not html:
+        return ""
+    
+    # Убираем style и script
+    text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Заменяем <br> и </p> на переносы строк
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</p>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
+    
+    # Убираем все теги
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Декодируем HTML entities
+    import html
+    text = html.unescape(text)
+    
+    # Убираем лишние пробелы
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    
+    return text.strip()
+
+
+def extract_reply_text(full_text: str, html_text: str = "") -> str:
     """
     Извлечь только текст ответа, убрав цитирование исходного письма.
+    
+    Args:
+        full_text: Текстовая версия письма (text/plain)
+        html_text: HTML версия (используется если text/plain пустой)
     
     Паттерны цитирования:
     - Строки, начинающиеся с ">"
     - Разделители типа "--- Original Message ---", "On ... wrote:"
     - Дата + время + email в угловых скобках (начало цитаты)
     """
-    if not full_text:
+    # Если plain text пустой — извлекаем из HTML
+    text_to_parse = full_text
+    if not text_to_parse or not text_to_parse.strip():
+        text_to_parse = _html_to_text(html_text)
+    
+    if not text_to_parse:
         return "(текст отсутствует)"
     
-    lines = full_text.split('\n')
+    lines = text_to_parse.split('\n')
     reply_lines = []
     in_quote = False
     
@@ -56,10 +95,13 @@ def extract_reply_text(full_text: str) -> str:
             r'^On .+ wrote:',  # "On Mon, Jan 1 wrote:"
             r'^\d{1,2}[\./]\d{1,2}[\./]\d{2,4}.*<.*@.*>',  # Дата + email
             r'^---+\s*(Original|Исходное)',  # --- Original Message ---
+            r'^-{10,}',  # ----------- разделитель
             r'^_{3,}',  # _____ разделитель
             r'^From:.*@',  # From: email
             r'^Отправлено:',  # Outlook
             r'^Sent:',  # Outlook EN
+            r'^Кому:',  # Outlook RU
+            r'^To:',  # Outlook EN
         ]
         
         # Проверяем, начинается ли цитирование
@@ -209,7 +251,13 @@ async def notify_user_about_reply(
         )
         
         # Извлекаем только текст ответа (без цитирования)
-        body_text = extract_reply_text(reply.body_text)
+        # Передаём и plain text, и HTML — используется первый непустой
+        logger.debug(
+            f"Reply text extraction: body_text={len(reply.body_text or '')} chars, "
+            f"body_html={len(reply.body_html or '')} chars"
+        )
+        body_text = extract_reply_text(reply.body_text, reply.body_html)
+        logger.debug(f"Extracted reply text: {body_text[:100]}..." if len(body_text) > 100 else f"Extracted: {body_text}")
         
         # Ограничиваем длину
         if len(body_text) > 1500:
