@@ -1,13 +1,18 @@
 """Главное меню и кнопки."""
 from loguru import logger
 
-from telegram import ReplyKeyboardMarkup, KeyboardButton
+from telegram import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+
+from bot.config import get_env
+
+WEBAPP_URL = get_env("WEBAPP_URL", "https://new-way.ergoproxy.ru")
 
 
 def get_main_menu_keyboard(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
     """Главное меню для пользователей, состоящих в компании."""
     logger.debug(f"get_main_menu_keyboard called, is_superadmin={is_superadmin}")
     keyboard = [
+        [KeyboardButton("🚀 WorkFlow", web_app=WebAppInfo(url=WEBAPP_URL))],
         [KeyboardButton("📦 Заведение продукта на проработку")],
         [KeyboardButton("➕ Добавить поставщика"), KeyboardButton("✅ Завершить заявку")],
         [KeyboardButton("🔄 Проработки (Заявки)"), KeyboardButton("📋 Заявки в работе")],
@@ -16,6 +21,16 @@ def get_main_menu_keyboard(is_superadmin: bool = False) -> ReplyKeyboardMarkup:
     if is_superadmin:
         keyboard.append([KeyboardButton("🔧 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_webapp_inline_keyboard() -> InlineKeyboardMarkup:
+    """Inline-кнопка для открытия Mini App."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "🚀 Открыть WorkFlow",
+            web_app=WebAppInfo(url=WEBAPP_URL)
+        )]
+    ])
 
 
 def get_registration_keyboard(is_superadmin: bool = False) -> ReplyKeyboardMarkup:

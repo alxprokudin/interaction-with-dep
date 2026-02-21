@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from sqlalchemy import select
 
 from bot.config import SUPERADMIN_IDS
-from bot.keyboards.main import get_main_menu_keyboard, get_registration_keyboard
+from bot.keyboards.main import get_main_menu_keyboard, get_registration_keyboard, get_webapp_inline_keyboard
 from bot.models import Company, User
 from bot.models.base import async_session_factory
 
@@ -92,6 +92,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         greeting,
         parse_mode="Markdown",
         reply_markup=get_main_menu_keyboard(is_superadmin=is_superadmin),
+    )
+    
+    await update.message.reply_text(
+        "💡 Или откройте веб-приложение:",
+        reply_markup=get_webapp_inline_keyboard(),
     )
     logger.debug("Стартовое сообщение отправлено")
 
